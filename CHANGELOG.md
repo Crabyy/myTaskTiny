@@ -4,6 +4,12 @@ Application changes, newest first. Versions use `MAJOR.MINOR.PATCH`: breaking ch
 
 Version 1.9.0 is the first public GitHub release. Earlier entries document development builds; 1.0.0 and 1.1.0 were assigned retrospectively to builds that did not yet include version metadata.
 
+## 1.9.1 — 2026-09-19
+
+- Custom shortcuts now replace their defaults. Buttons and tooltips show the active keys.
+- Added **Restore defaults** to reset recording, playback, and stop to F8, F9, and F12.
+- Fixed the Menu button so clicking it again closes the menu.
+
 ## 1.9.0 — 2026-09-19
 
 - Added startup update checks and **Menu → Check for updates**.

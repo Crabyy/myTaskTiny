@@ -118,11 +118,9 @@ public class HotkeySettings {
     public void Validate() {
         var choices=Choices();
         if(!choices.Contains((Keys)Record)||!choices.Contains((Keys)Play)||!choices.Contains((Keys)Stop))throw new Exception("Choose a supported key for each action.");
-        if((Record!=(int)Keys.F8&&(Record==(int)Keys.F9||Record==(int)Keys.F12)) || (Play!=(int)Keys.F9&&(Play==(int)Keys.F8||Play==(int)Keys.F12)) || (Stop!=(int)Keys.F12&&(Stop==(int)Keys.F8||Stop==(int)Keys.F9)))throw new Exception("F8 is reserved for Record, F9 for Play, and F12 for Stop. Choose another additional key.");
         if(Record==Play||Record==Stop||Play==Stop)throw new Exception("Record, Play, and Stop must use different keys.");
     }
-    public int ActionFor(uint key) { return key==(uint)Keys.F8||key==Record?1:key==(uint)Keys.F9||key==Play?2:key==(uint)Keys.F12||key==Stop?3:0; }
-    public static string Display(int defaultKey,int customKey) {return Name(defaultKey)+(defaultKey==customKey?"":" / "+Name(customKey));}
+    public int ActionFor(uint key) { return key==Record?1:key==Play?2:key==Stop?3:0; }
     public static HotkeySettings Load(string path) {
         if(!File.Exists(path))return new HotkeySettings();
         var settings=Recording.Serializer().Deserialize<HotkeySettings>(File.ReadAllText(path));
@@ -278,27 +276,27 @@ internal class HotkeyDialog : Form {
         AutoScaleDimensions=new SizeF(96F,96F);AutoScaleMode=AutoScaleMode.Dpi;
         Text="Customize keys";ClientSize=new Size(440,270);FormBorderStyle=FormBorderStyle.FixedDialog;MaximizeBox=MinimizeBox=false;ShowInTaskbar=false;ShowIcon=false;
         StartPosition=FormStartPosition.CenterParent;Font=new Font("Segoe UI",9);BackColor=Theme.Canvas;ForeColor=Theme.Text;
-        Controls.Add(new Label{Text="F8, F9 and F12 always work while the app is open. You can add one extra key for each action.",Location=new Point(20,18),Size=new Size(400,34)});
+        Controls.Add(new Label{Text="Choose one key for each action. Your choice replaces its default shortcut. Use Restore defaults to reset all three.",Location=new Point(20,18),Size=new Size(400,34)});
         Controls.Add(new Label{Text="Action",Location=new Point(20,64),AutoSize=true,ForeColor=Theme.Muted});
         Controls.Add(new Label{Text="Default",Location=new Point(220,64),AutoSize=true,ForeColor=Theme.Muted});
-        Controls.Add(new Label{Text="Extra key",Location=new Point(300,64),AutoSize=true,ForeColor=Theme.Muted});
+        Controls.Add(new Label{Text="Active key",Location=new Point(300,64),AutoSize=true,ForeColor=Theme.Muted});
         Controls.Add(new Panel{BackColor=Theme.Line,Location=new Point(20,86),Size=new Size(400,1)});
         record=Row("Record / finish",98,current.Record,Keys.F8);play=Row("Play / stop playback",134,current.Play,Keys.F9);stop=Row("Emergency stop",170,current.Stop,Keys.F12);
         var footer=Theme.Footer(new Rectangle(0,212,440,58));Controls.Add(footer);
-        var reset=new ToolButton{Text="Reset extras",Location=new Point(20,14),Size=new Size(104,30)};reset.Click+=(s,e)=>{record.SelectedIndex=0;play.SelectedIndex=0;stop.SelectedIndex=0;};footer.Controls.Add(reset);
+        var reset=new ToolButton{Text="Restore defaults",Location=new Point(20,14),Size=new Size(136,30)};reset.Click+=(s,e)=>{record.SelectedIndex=0;play.SelectedIndex=0;stop.SelectedIndex=0;};footer.Controls.Add(reset);
         var cancel=new ToolButton{Text="Cancel",DialogResult=DialogResult.Cancel,Location=new Point(236,14),Size=new Size(88,30)};footer.Controls.Add(cancel);CancelButton=cancel;
         var save=new ToolButton{Text="Save",Style=ButtonStyle.Primary,Location=new Point(332,14),Size=new Size(88,30)};footer.Controls.Add(save);AcceptButton=save;
         save.Click+=(s,e)=> {var selected=new HotkeySettings{Record=(int)(Keys)record.SelectedItem,Play=(int)(Keys)play.SelectedItem,Stop=(int)(Keys)stop.SelectedItem};try{selected.Validate();Selection=selected;DialogResult=DialogResult.OK;}catch(Exception ex){MessageBox.Show(this,ex.Message,"Choose different keys",MessageBoxButtons.OK,MessageBoxIcon.Information);}};
         ResumeLayout(false);
     }
-    // The first item is the action's default key, shown as "None" because the default always stays active.
+    // Show the factory default for reference; only the selected key is active.
     ComboBox Row(string text,int y,int key,Keys fallback) {
         Controls.Add(new Label{Text=text,Location=new Point(20,y+4),AutoSize=true});
         Controls.Add(new KeyCap(HotkeySettings.Name((int)fallback)){Location=new Point(220,y+1),Size=new Size(48,22)});
         var box=new ComboBox{DropDownStyle=ComboBoxStyle.DropDownList,Location=new Point(300,y),Width=120,FormattingEnabled=true,MaxDropDownItems=12};
         box.Items.Add(fallback);
-        foreach(var item in HotkeySettings.Choices())if(item!=Keys.F8&&item!=Keys.F9&&item!=Keys.F12)box.Items.Add(item);
-        box.Format+=(s,e)=>e.Value=(Keys)e.ListItem==fallback?"None":HotkeySettings.Name((int)(Keys)e.ListItem);
+        foreach(var item in HotkeySettings.Choices())if(item!=fallback)box.Items.Add(item);
+        box.Format+=(s,e)=>e.Value=HotkeySettings.Name((int)(Keys)e.ListItem);
         box.SelectedItem=(Keys)key;Controls.Add(box);return box;
     }
 }
@@ -362,6 +360,7 @@ internal static class Native {
     [DllImport("user32.dll",SetLastError=true)] public static extern uint SendInput(uint count,Input[] inputs,int size);
     [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
     [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(Point point);
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr window);
     [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern uint RegisterWindowMessage(string name);
     [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr window,uint message,IntPtr wParam,IntPtr lParam);
@@ -463,8 +462,11 @@ public class MainForm : Form {
         record=ToolAt("Record",10,8,104,32,()=>ToggleRecord(),ButtonStyle.Primary,transport);
         play=ToolAt("Play",120,8,104,32,()=>StartPlayback(),ButtonStyle.Secondary,transport);
         stop=ToolAt("Stop",230,8,104,32,()=>Stop(),ButtonStyle.Secondary,transport);
-        menuButton=ToolAt("Menu",340,8,50,32,()=>menu.Show(menuButton,new Point(menuButton.Width,menuButton.Height),ToolStripDropDownDirection.BelowLeft),ButtonStyle.Secondary,Font);
+        menuButton=ToolAt("Menu",340,8,50,32,()=>ToggleMenu(),ButtonStyle.Secondary,Font);
         menu=new ContextMenuStrip{Font=Font,Renderer=new ToolStripProfessionalRenderer(new FlatColors()){RoundedEdges=false},ShowImageMargin=false,ShowCheckMargin=true};
+        // Do not let outside-click dismissal close and immediately reopen the menu
+        // before the Menu button's Click handler gets the same mouse gesture.
+        menu.Closing+=(s,e)=>{if(e.CloseReason==ToolStripDropDownCloseReason.AppClicked && menuButton.RectangleToScreen(menuButton.ClientRectangle).Contains(Cursor.Position))e.Cancel=true;};
         openItem=MenuItem("Open…",()=>OpenMacro());saveItem=MenuItem("Save…",()=>SaveMacro());exportItem=MenuItem("Export EXE…",()=>ExportExe());
         savedItem=new ToolStripMenuItem("Saved recordings");menu.Items.Insert(0,savedItem);
         var savedMenu=(ToolStripDropDownMenu)savedItem.DropDown;savedMenu.Font=Font;savedMenu.Renderer=menu.Renderer;savedMenu.ShowImageMargin=false;savedMenu.ShowCheckMargin=true;
@@ -506,6 +508,33 @@ public class MainForm : Form {
         SetStatus("Ready",Tone.Ready,Summary());
         if(settingsWarning!=null)SetStatus("Ready",Tone.Warning,"Settings unreadable; default keys active");
     }
+    void ToggleMenu() {
+        if(menu.Visible)menu.Close(ToolStripDropDownCloseReason.CloseCalled);
+        else menu.Show(menuButton,new Point(menuButton.Width,menuButton.Height),ToolStripDropDownDirection.BelowLeft);
+    }
+    internal void TestMenu(bool mouseInput) {
+        ToggleMenu();Application.DoEvents();if(!menu.Visible)throw new Exception("Menu did not open.");
+        ToggleMenu();Application.DoEvents();if(menu.Visible)throw new Exception("Menu did not close.");
+        ToggleMenu();menu.Close(ToolStripDropDownCloseReason.Keyboard);Application.DoEvents();if(menu.Visible)throw new Exception("Menu keyboard dismissal failed.");
+        if(!mouseInput)return;
+        TopMost=true;BringToFront();Activate();Application.DoEvents();
+        Point saved=Cursor.Position;
+        try {
+            // An initial click on the title bar activates the test window without invoking an action.
+            int titleX=Left+Width/2,titleY=Top+12;
+            if(Native.WindowFromPoint(new Native.Point{X=titleX,Y=titleY})!=Handle)throw new Exception("Menu test title bar is obscured.");
+            Native.Send(new MacroEvent{Message=0x201,X=titleX,Y=titleY});PumpMessages(80);
+            Native.Send(new MacroEvent{Message=0x202,X=titleX,Y=titleY});PumpMessages(120);
+            Point point=menuButton.PointToScreen(new Point(menuButton.Width/2,menuButton.Height/2));
+            if(Native.WindowFromPoint(new Native.Point{X=point.X,Y=point.Y})!=menuButton.Handle)throw new Exception("Menu test button is obscured.");
+            for(int i=0;i<4;i++) {
+                Native.Send(new MacroEvent{Message=0x201,X=point.X,Y=point.Y});PumpMessages(70);
+                Native.Send(new MacroEvent{Message=0x202,X=point.X,Y=point.Y});PumpMessages(70);
+                if(menu.Visible!=(i%2==0))throw new Exception("Mouse menu toggle failed at click "+(i+1));
+            }
+        }finally{menu.Close();TopMost=false;Cursor.Position=saved;}
+    }
+    static void PumpMessages(int milliseconds) {var elapsed=Stopwatch.StartNew();while(elapsed.ElapsedMilliseconds<milliseconds){Application.DoEvents();System.Threading.Thread.Sleep(1);}}
     ToolButton ToolAt(string text,int x,int y,int w,int h,Action action,ButtonStyle style,Font font) { var b=new ToolButton{Text=text,Style=style,Font=font,Location=new Point(x,y),Size=new Size(w,h)};b.Click+=(s,e)=>Guard(action);Controls.Add(b);return b; }
     ToolStripMenuItem MenuItem(string text,Action action) { var item=new ToolStripMenuItem(text);item.Click+=(s,e)=>Guard(action);menu.Items.Add(item);return item; }
     void SetStatus(string headline,Tone tone,string info) { card.Headline=headline;card.Tone=tone;card.Info=info; }
@@ -523,15 +552,15 @@ public class MainForm : Form {
         speedMode.Enabled=intervalEnabled.Enabled=!busy;speed.Enabled=!busy&&speedMode.Checked;intervalValue.Enabled=intervalUnit.Enabled=!busy&&intervalEnabled.Checked;
         play.Enabled=!recording&&macro.Events.Count>0;record.Enabled=!playing&&!pending;stop.Enabled=busy;
         record.Text=recording?"Finish":"Record";record.Style=recording?ButtonStyle.Danger:ButtonStyle.Primary;
-        record.Hint=HotkeySettings.Name((int)Keys.F8);play.Hint=HotkeySettings.Name((int)Keys.F9);stop.Hint=HotkeySettings.Name((int)Keys.F12);
-        tips.SetToolTip(record,(recording?"Finish recording (":"Record (")+HotkeySettings.Display((int)Keys.F8,hotkeys.Record)+")");tips.SetToolTip(play,"Play / stop playback ("+HotkeySettings.Display((int)Keys.F9,hotkeys.Play)+")");tips.SetToolTip(stop,"Emergency stop ("+HotkeySettings.Display((int)Keys.F12,hotkeys.Stop)+")");
+        record.Hint=HotkeySettings.Name(hotkeys.Record);play.Hint=HotkeySettings.Name(hotkeys.Play);stop.Hint=HotkeySettings.Name(hotkeys.Stop);
+        tips.SetToolTip(record,(recording?"Finish recording (":"Record (")+HotkeySettings.Name(hotkeys.Record)+")");tips.SetToolTip(play,"Play / stop playback ("+HotkeySettings.Name(hotkeys.Play)+")");tips.SetToolTip(stop,"Emergency stop ("+HotkeySettings.Name(hotkeys.Stop)+")");
         Text="myTinyTask v"+AppVersion.Current+" — "+fileName+(dirty?" *":"");
     }
     void ToggleRecord() {
         if(playing||pending)return;
         if(recording){Stop();return;}
         if(!ConfirmDiscard())return;
-        macro=new Recording();selectedPath=null;fileName="Untitled";dirty=true;lastMove=-10;watch.Restart();recording=true;SetStatus("Recording",Tone.Recording,"Press "+HotkeySettings.Display((int)Keys.F8,hotkeys.Record)+" to finish");UpdateControls();
+        macro=new Recording();selectedPath=null;fileName="Untitled";dirty=true;lastMove=-10;watch.Restart();recording=true;SetStatus("Recording",Tone.Recording,"Press "+HotkeySettings.Name(hotkeys.Record)+" to finish");UpdateControls();
     }
     void StartPlayback() {
         if(playing||pending){Stop();return;}
@@ -632,7 +661,7 @@ public class MainForm : Form {
         editingHotkeys=true;
         try {using(var dialog=new HotkeyDialog(hotkeys)) {
             if(dialog.ShowDialog(this)!=DialogResult.OK)return;
-            dialog.Selection.Save(settingsPath);hotkeys=dialog.Selection;UpdateControls();SetStatus("Keys saved",Tone.Ready,"Extra keys are active");
+            dialog.Selection.Save(settingsPath);hotkeys=dialog.Selection;UpdateControls();SetStatus("Keys saved",Tone.Ready,"Custom shortcuts are active");
         }}finally{editingHotkeys=false;}
     }
     bool HandleShortcut(uint key,bool down) {
@@ -646,8 +675,8 @@ public class MainForm : Form {
     }
     internal void TestHotkeys() {
         hotkeys=new HotkeySettings{Record=(int)Keys.F6,Play=(int)Keys.F7,Stop=(int)Keys.F10};UpdateControls();
-        HandleShortcut((uint)Keys.F8,true);Application.DoEvents();if(!recording)throw new Exception("Default record shortcut lost.");HandleShortcut((uint)Keys.F8,false);
-        HandleShortcut((uint)Keys.F8,true);Application.DoEvents();if(recording)throw new Exception("Default finish shortcut lost.");HandleShortcut((uint)Keys.F8,false);dirty=false;
+        if(HandleShortcut((uint)Keys.F8,true)||HandleShortcut((uint)Keys.F9,true)||HandleShortcut((uint)Keys.F12,true))throw new Exception("Replaced default shortcut still active.");
+        if(record.Hint!="F6"||play.Hint!="F7"||stop.Hint!="F10")throw new Exception("Custom shortcut labels failed.");
         HandleShortcut((uint)Keys.F6,true);Application.DoEvents();
         if(!recording)throw new Exception("Custom record shortcut failed.");
         HandleShortcut((uint)Keys.F6,true);Application.DoEvents();if(!recording)throw new Exception("Key repeat triggered twice.");
@@ -657,11 +686,9 @@ public class MainForm : Form {
         HandleShortcut((uint)Keys.F7,true);Application.DoEvents();if(!pending)throw new Exception("Custom play failed.");
         HandleShortcut((uint)Keys.F10,true);Application.DoEvents();if(pending||playing)throw new Exception("Independent stop while play key held failed.");
         HandleShortcut((uint)Keys.F7,false);HandleShortcut((uint)Keys.F10,false);
-        HandleShortcut((uint)Keys.F9,true);Application.DoEvents();if(!pending)throw new Exception("Default play shortcut lost.");
-        HandleShortcut((uint)Keys.F12,true);Application.DoEvents();if(pending||playing)throw new Exception("Default stop shortcut lost.");
-        HandleShortcut((uint)Keys.F9,false);HandleShortcut((uint)Keys.F12,false);
         editingHotkeys=true;if(HandleShortcut((uint)Keys.F6,true))throw new Exception("Shortcut fired in settings.");editingHotkeys=false;
         hotkeys=new HotkeySettings();UpdateControls();
+        if(hotkeys.ActionFor((uint)Keys.F8)!=1||hotkeys.ActionFor((uint)Keys.F9)!=2||hotkeys.ActionFor((uint)Keys.F12)!=3||record.Hint!="F8"||play.Hint!="F9"||stop.Hint!="F12")throw new Exception("Restore default keys failed.");
     }
     // A second launch broadcasts this message so the running window comes to the front instead of opening another copy.
     internal static readonly uint ActivateMessage=Native.RegisterWindowMessage("myTinyTask.Activate");
@@ -788,7 +815,7 @@ public class MainForm : Form {
 internal static class Program {
     [STAThread] static void Main(string[] args) {
         Native.SetProcessDPIAware();Application.EnableVisualStyles();Application.SetCompatibleTextRenderingDefault(false);
-        if(args.Length>0&&(args[0]=="--self-test"||args[0]=="--hotkey-test")) {try {SelfTest(args[0]=="--self-test");File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"test-results.txt"),(args[0]=="--hotkey-test"?"PASS (shortcut tests; live playback not run): ":"PASS: ")+"update versions, skip/manual override, prerelease filtering and update preferences, exclusive playback modes, completed-loop display, reset and retention, interval timing, repeat completion, long recording non-overlap, stop while waiting, saved recordings discovery, persistence, deduplication, selection, missing and invalid files, serialization, timing validation, invalid key rejection, default and additional shortcut dispatch, held-key repeat suppression, independent emergency stop, settings persistence, duplicate shortcut validation, input ABI, key conversion, mouse conversion, hook install/uninstall, UI lifecycle, standalone EXE compilation, app and exported EXE version metadata.");Environment.ExitCode=0;}catch(Exception ex){File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"test-results.txt"),"FAIL: "+ex);Environment.ExitCode=1;}return;}
+        if(args.Length>0&&(args[0]=="--self-test"||args[0]=="--hotkey-test")) {try {SelfTest(args[0]=="--self-test");File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"test-results.txt"),(args[0]=="--hotkey-test"?"PASS (shortcut tests; live playback not run): ":"PASS: ")+"update versions, skip/manual override, prerelease filtering and update preferences, exclusive playback modes, completed-loop display, reset and retention, interval timing, repeat completion, long recording non-overlap, stop while waiting, saved recordings discovery, persistence, deduplication, selection, missing and invalid files, serialization, timing validation, invalid key rejection, replacement shortcuts, restored defaults, active key labels, menu toggle, held-key repeat suppression, independent emergency stop, settings persistence, duplicate shortcut validation, input ABI, key conversion, mouse conversion, hook install/uninstall, UI lifecycle, standalone EXE compilation, app and exported EXE version metadata.");Environment.ExitCode=0;}catch(Exception ex){File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"test-results.txt"),"FAIL: "+ex);Environment.ExitCode=1;}return;}
         if(args.Length>0&&args[0]=="--check-update-test") {try{var release=UpdateService.Fetch();File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"update-test-results.txt"),release==null?"PASS: no published downloadable release": "PASS: GitHub release "+release.tag_name+"; offer="+UpdateService.ShouldOffer(release,AppVersion.Current,null,false));}catch(Exception ex){File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"update-test-results.txt"),"FAIL: "+ex.Message);Environment.ExitCode=1;}return;}
         // One recorder at a time: two copies would both react to the same global shortcuts.
         bool first;
@@ -812,7 +839,7 @@ internal static class Program {
             var loaded=HotkeySettings.Load(settingsFile);Assert(loaded.Record==keys.Record&&loaded.Play==keys.Play&&loaded.Stop==keys.Stop,"Settings round trip");
             keys.Stop=(int)Keys.F11;keys.Save(settingsFile);Assert(HotkeySettings.Load(settingsFile).Stop==(int)Keys.F11,"Settings replacement");
             keys.Play=keys.Record;bool invalid=false;try{keys.Validate();}catch{invalid=true;}Assert(invalid,"Reject duplicate keys");
-            keys.Play=(int)Keys.F8;invalid=false;try{keys.Validate();}catch{invalid=true;}Assert(invalid,"Reject collision with default key");
+            keys.Play=(int)Keys.F8;keys.Validate();Assert(keys.ActionFor((uint)Keys.F8)==2,"Reassign unused default key");
             keys.Play=0;invalid=false;try{keys.Validate();}catch{invalid=true;}Assert(invalid,"Reject unsupported key");
         }finally{if(File.Exists(settingsFile))File.Delete(settingsFile);}
 
@@ -822,7 +849,7 @@ internal static class Program {
         Assert(Marshal.SizeOf(typeof(Native.Input))==(IntPtr.Size==8?40:28),"Native INPUT ABI");var k=Native.Convert(r.Events[1]);Assert(k.Type==1&&k.Value.Key.Scan==30&&k.Value.Key.Flags==10,"Keyboard conversion");
         var m=Native.Convert(new MacroEvent{Message=0x20A,Data=unchecked((uint)-120)});Assert(m.Value.Mouse.Flags==0xC801&&m.Value.Mouse.Data==unchecked((uint)-120),"Wheel conversion");
         Native.Hook callback=(c,w,l)=>Native.CallNextHookEx(IntPtr.Zero,c,w,l);var kh=Native.SetWindowsHookEx(13,callback,Native.GetModuleHandle(null),0);var mh=Native.SetWindowsHookEx(14,callback,Native.GetModuleHandle(null),0);Assert(kh!=IntPtr.Zero&&mh!=IntPtr.Zero,"Install hooks");Native.UnhookWindowsHookEx(kh);Native.UnhookWindowsHookEx(mh);GC.KeepAlive(callback);
-        using(var f=new MainForm(true)){f.Show();Application.DoEvents();Assert(f.Visible,"Window visible");f.TestHotkeys();f.TestLibrary();f.TestIntervals();if(livePlayback)f.TestPlayback();
+        using(var f=new MainForm(true)){f.Show();Application.DoEvents();Assert(f.Visible,"Window visible");f.TestHotkeys();f.TestMenu(livePlayback);f.TestLibrary();f.TestIntervals();if(livePlayback)f.TestPlayback();
             string exported=Path.Combine(Path.GetTempPath(),"myTinyTask-test-"+Guid.NewGuid().ToString("N")+".exe");
             try {f.BuildExport(exported);Assert(new FileInfo(exported).Length>10000,"Export executable");Assert(FileVersionInfo.GetVersionInfo(exported).ProductVersion==AppVersion.Current,"Export version metadata");}finally{if(File.Exists(exported))File.Delete(exported);}
             using(var bitmap=new Bitmap(f.Width,f.Height)){f.DrawToBitmap(bitmap,new Rectangle(0,0,f.Width,f.Height));bitmap.Save(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"preview.png"));}

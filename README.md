@@ -27,14 +27,16 @@ See [Microsoft’s explanation of SmartScreen reputation](https://learn.microsof
 ## Record your first task
 
 1. Open the application you want to use.
-2. Press **F8** to start recording, then perform your actions.
+2. Press **F8** (or your custom Record key) to start recording, then perform your actions.
 3. Press **F8** again to finish.
-4. Press **F9** to replay. You have two seconds to focus the target window.
-5. Press **F12** to stop playback or cancel a countdown.
+4. Press **F9** (or your custom Play key) to replay. You have two seconds to focus the target window.
+5. Press **F12** (or your custom Stop key) to stop playback or cancel a countdown.
 
 The Record, Play, and Stop buttons perform the same actions. Recording captures mouse movement, button presses, scrolling, and keystrokes. Input in the recorder’s own window is excluded. Use F8 to finish without moving the mouse back to the recorder.
 
 ### Keyboard shortcuts
+
+The following are the default assignments:
 
 | Key | Action |
 | --- | --- |
@@ -42,7 +44,9 @@ The Record, Play, and Stop buttons perform the same actions. Recording captures 
 | F9 | Start playback, or stop an active playback |
 | F12 | Stop recording, playback, or a countdown |
 
-Use **Menu → Customize keys** to assign an additional single key to each action. F8, F9, and F12 remain active. Choose **None** to remove an extra key, or **Reset extras** to clear all of them. Modifier combinations such as Ctrl+R are not supported.
+Use **Menu → Customize keys** to assign a single key to each action. A custom key replaces that action’s default; the buttons and tooltips show the active assignments. Choose **Restore defaults**, then **Save**, to return to F8, F9, and F12. Each action must have a different key. Modifier combinations such as Ctrl+R are not supported. Existing saved custom keys are kept when you update.
+
+Click **Menu** to open it; click **Menu** again to close it.
 
 These shortcuts are reserved while myTinyTask is open. Close the app to return them to other applications.
 
@@ -85,7 +89,7 @@ Recordings stay on your computer. The update checker contacts GitHub for release
 | File | Purpose |
 | --- | --- |
 | `*.mtt` | Saved mouse and keyboard recordings |
-| `myTinyTask.settings.json` | Additional keyboard shortcuts, stored beside the app |
+| `myTinyTask.settings.json` | Active keyboard shortcuts, stored beside the app |
 | `myTinyTask.recordings.json` | Saved-recordings menu history, stored beside the app |
 | `%LOCALAPPDATA%\myTinyTask\updates.json` | Startup update preference and skipped version |
 
