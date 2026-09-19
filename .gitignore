@@ -1,0 +1,14 @@
+# Local app, release artifacts, and user data
+*.exe
+*.mtt
+*.settings.json
+*.recordings.json
+*.tmp
+releases/
+backups/
+Recordings/
+test-results.txt
+update-test-results.txt
+preview.png
+keys-preview.png
+update-preview.png
