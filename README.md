@@ -1,6 +1,6 @@
 # myTinyTask
 
-A portable Windows app for recording and replaying mouse and keyboard actions. Built by Craby, inspired by TinyTask.
+A portable Windows app for recording and replaying mouse and keyboard actions. Built by [Craby](https://github.com/Crabyy), inspired by TinyTask.
 
 [Download the latest release](https://github.com/Crabyy/myTinyTask/releases/latest) · [Changelog](CHANGELOG.md) · [Report an issue](https://github.com/Crabyy/myTinyTask/issues)
 
