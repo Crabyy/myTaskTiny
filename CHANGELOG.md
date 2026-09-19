@@ -1,99 +1,91 @@
 # Changelog
 
-Versions follow MAJOR.MINOR.PATCH: major for incompatible changes, minor for new compatible features, and patch for compatible fixes and maintenance.
+Application changes, newest first. Versions use `MAJOR.MINOR.PATCH`: breaking changes, features, and fixes respectively.
+
+Version 1.9.0 is the first public GitHub release. Earlier entries document development builds; 1.0.0 and 1.1.0 were assigned retrospectively to builds that did not yet include version metadata.
 
 ## 1.9.0 — 2026-09-19
 
-- Check the official Crabyy/myTinyTask GitHub releases for updates at startup, with a manual Check for updates menu item.
-- Show a new-version popup with release notes, Download update, Later, and Skip this version.
-- Defer update popups until the recorder is idle and focused. Offline startup checks stay quiet.
-- Remember skipped releases and the optional startup-check setting. Manual checks can show skipped versions.
-- Open the official release page for manual downloads; never replace the running EXE, recordings, or settings automatically.
-- Disable recorder update prompts in exported macro EXEs.
+- Added startup update checks and **Menu → Check for updates**.
+- Added an update dialog with release notes, **Download update**, **Later**, and **Skip this version**.
+- Saved startup-check preferences and skipped versions. Manual checks can still show a skipped release.
+- Deferred update dialogs until the app is idle and focused. Failed startup checks do not interrupt the user.
+- Update downloads open the GitHub release page for manual installation. Exported macro executables do not check for recorder updates.
 
 ## 1.8.0 — 2026-09-19
 
-- Only one copy of the app can run at a time. Launching it again brings the open window to the front (restoring it if minimized) instead of starting a second recorder that would react to the same global shortcuts.
-- This also applies to exported macro EXEs: close the recorder, or another exported macro, before opening one.
+- Limited the app to one instance per Windows session. Opening it again restores and focuses the existing window.
+- Applied the same restriction to exported macros, preventing them from running alongside the recorder or another current-version export.
 
 ## 1.7.0 — 2026-09-19
 
-- Menu items now show a check mark when active: Always on top, and the currently loaded entry under Saved recordings.
-- Added Menu > About myTinyTask… with the version and developer credit (Craby), keeping the main window compact.
-- The developer name is also stored in the EXE's Windows file properties (Company and Copyright), including exported macro EXEs.
+- Added checkmarks for **Always on top** and the selected saved recording.
+- Added an About dialog with the app version and developer credit.
+- Added developer details to Windows file properties for the recorder and exported macros.
 
 ## 1.6.2 — 2026-09-19
 
-- Restored the compact window: 400 x 128 px (was 400 x 166) by putting the completed-loops counter beside Run every instead of on its own row.
-- Speed and Run every share one control column; row spacing tightened; the counter is muted secondary text and no longer wraps at large counts.
-- The waiting status no longer repeats the completed count shown by the counter.
+- Reduced the window to 400 × 128 pixels by moving the loop counter beside **Run every**.
+- Aligned playback controls and kept large loop counts on one line.
+- Removed the duplicate completed-loop count from the waiting status.
 
 ## 1.6.1 — 2026-09-19
 
-- Speed and Run every are mutually exclusive modes selected with radio buttons; inactive inputs are grayed out.
-- Run every replays recordings at their original speed, ignoring the saved Speed selection. Returning to Speed restores that selection.
+- Made **Speed** and **Run every** mutually exclusive, with inactive controls grayed out.
+- Set interval playback to the recording’s original speed. Returning to Speed restores the previous speed selection.
 
 ## 1.6.0 — 2026-09-19
 
-- Show a dedicated completed-loop counter during playback, interval waiting, and after stopping.
-- Count only fully completed replays; reset the counter when starting a new playback.
+- Added a completed-loop counter that remains visible during playback, between runs, and after stopping.
+- Counted only finished runs and reset the counter when a new playback starts.
 
 ## 1.5.0 — 2026-09-19
 
-- Added optional Run every controls in seconds, minutes, or hours for whole recordings.
-- First replay starts after the normal two-second countdown. Intervals are measured between replay starts; longer recordings finish before the next run begins.
-- Show time remaining while waiting; Repeat and Loop still control the number of runs, and Stop cancels waiting immediately.
+- Added **Run every** for replaying whole recordings at intervals measured in seconds, minutes, or hours.
+- Measured intervals between run starts and prevented overlapping runs.
+- Added a countdown between runs, with support for repeat limits, continuous looping, and immediate cancellation.
 
 ## 1.4.0 — 2026-09-19
 
-- Added Menu > Saved recordings for directly selecting saved macros, with a checkmark for the loaded recording.
-- Remember up to 50 recordings saved or opened anywhere, across app restarts.
-- Automatically discover .mtt files beside the app or in its Recordings subfolder, and omit missing files.
-- Preserve unsaved-change prompts and validate files before replacing the loaded recording. Selecting a recording does not start playback.
+- Added **Menu → Saved recordings**, including a marker for the loaded file.
+- Remembered up to 50 saved or opened recordings across sessions.
+- Listed `.mtt` files from the app folder and its `Recordings` subfolder; omitted missing files.
+- Validated selected files and prompted before discarding unsaved work.
 
 ## 1.3.0 — 2026-09-19
 
-- Compact window (about 400 x 110 px, down from 630 x 216): Record, Play, and Stop plus a Menu button, a one-line status, and the Speed, Repeat, and Loop options.
-- Open, Save, Export EXE, Always on top, and Customize keys moved into the Menu.
-- Added an application icon, used by the EXE file, taskbar, window title bar, and exported macro EXEs. It is generated by `tools/make-icon.ps1` into `assets/app.ico`.
-- Buttons show only each action's default key; hover for the full list including any extra key.
+- Replaced the larger window with a compact toolbar and playback controls.
+- Moved file actions, key settings, and **Always on top** into the menu.
+- Added an application icon to the recorder and exported macros.
+- Displayed default shortcuts on the buttons and additional shortcuts in tooltips.
 
 ## 1.2.0 — 2026-09-19
 
-- Redesigned the interface: Record is the primary action, shortcut keys are shown as key caps on each button, and file actions moved to a footer.
-- Replaced the two-line status text with a status card showing the current state, recording summary, and file name.
-- Recording, playback countdown, and playback progress now use clear wording and state colors.
-- Customize keys now lists the always-active default keys and offers an optional extra key, with "None" to remove it.
-- The window and dialog scale with the system display scaling instead of using fixed pixel sizes.
-- Repeat is disabled while "Loop until stopped" is on.
+- Redesigned the recording controls, shortcut labels, and status display.
+- Added separate visual states for recording, countdown, and playback.
+- Added **None** for removing an additional shortcut and improved display scaling.
+- Disabled the repeat-count input while continuous looping is selected.
 
 ## 1.1.2 — 2026-09-19
 
-- Keep F8 (record), F9 (play), and F12 (stop) active alongside optional custom keys.
-- Prevent custom shortcuts from conflicting with another action's default key.
-- Build one main executable by default; create release packages only with `build.cmd -Package`.
-- Remove obsolete executable copies, old release packages, and generated test previews.
+- Kept F8, F9, and F12 active alongside additional custom shortcuts.
+- Prevented custom shortcuts from using another action’s default key.
+- Made release packaging optional and removed obsolete generated files.
 
 ## 1.1.1 — 2026-09-19
 
-- Introduced explicit versioning from a single VERSION file.
-- Show the version in the app header, window title, and Windows executable properties.
-- Preserve version metadata in exported macro executables.
-- Build versioned release folders and ZIP packages containing the executable, source, build scripts, documentation, and an executable SHA-256 checksum.
-- Back up the previous executable on deployment without closing a running app.
+- Introduced the `VERSION` file and consistent version metadata in the app and exported macros.
+- Added versioned release packages containing source, documentation, and an executable checksum.
+- Added a backup of the previous executable during deployment.
 
 ## 1.1.0 — 2026-09-19
 
-Retrospective label for the previously unversioned customizable-keys build.
-
-- Customize the single keys for recording, playback, and emergency stop.
-- Persist shortcut choices and reject duplicate assignments.
-- Handle held shortcut keys independently and suppress repeated presses.
+- Added configurable recording, playback, and stop keys.
+- Saved shortcut preferences and rejected duplicate assignments.
+- Handled held shortcuts independently and suppressed repeated activation.
 
 ## 1.0.0 — 2026-09-19
 
-Retrospective label for the initial unversioned build.
-
-- Mouse and keyboard recording, playback, speed control, repetition, and continuous looping.
-- Save/load recordings and export standalone macro executables.
-- Global shortcuts and emergency stop.
+- Added mouse and keyboard recording, playback speeds, repeat counts, and continuous looping.
+- Added recording files and standalone executable export.
+- Added global shortcuts and an emergency stop.

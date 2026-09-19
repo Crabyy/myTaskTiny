@@ -1,83 +1,115 @@
 # myTinyTask
 
-Your own small, portable Windows mouse and keyboard recorder, inspired by TinyTask.
+A portable Windows app for recording and replaying mouse and keyboard actions. Built by Craby, inspired by TinyTask.
 
-Developed by Craby. The version and credit are shown under **Menu > About myTinyTask…**.
+[Download the latest release](https://github.com/Crabyy/myTinyTask/releases/latest) · [Changelog](CHANGELOG.md) · [Report an issue](https://github.com/Crabyy/myTinyTask/issues)
 
-## Start
+## Download and run
 
-Double-click **myTinyTask.exe**. Download it from [GitHub Releases](https://github.com/Crabyy/myTinyTask/releases/latest). No installer is needed; keep the app in a writable folder. Windows with .NET Framework 4.5 or newer is required. Only one copy runs at a time; opening it again brings the running window to the front.
+Download **myTinyTask.exe** from the release page and place it in a writable folder. No installation is required. The ZIP includes the executable, source code, and documentation.
 
-1. Open the application you want to automate.
-2. Press **F8** to start recording, perform the steps, then press **F8** again to finish.
-3. Press **F9** to play. You have two seconds to focus the target application.
-4. Press **F12** at any time to stop recording, cancel the countdown, or stop playback.
+**Requirements:** Windows with .NET Framework 4.5 or later.
 
-The window has the same controls. Open **Menu > Customize keys…** to add an extra single key for each action. **F8 (Record), F9 (Play), and F12 (Stop) always remain active outside the settings dialog.** Choose **None**, or click **Reset extras**, to remove additional shortcuts. Click **Save** to remember your choices. Additional keys must be distinct and cannot use another action's default key. Function keys, letters, digits, numpad digits, and selected navigation keys are available. Modifier combinations are not supported. Default and additional keys are reserved while the app is open; close the app to return them to other applications. Keyboard input in the recorder itself and mouse events over its visible window are excluded. For clean recordings, use F8 to finish without moving the mouse back to the toolbar.
+### Windows SmartScreen
 
-## Features
+The current release is **not digitally signed**. Windows may display **“Windows protected your PC”** and identify the publisher as **“Unknown publisher”** when you open it. This is a SmartScreen reputation warning, not by itself a malware detection or a guarantee that a file is safe. Hosting a file on GitHub does not give it a trusted publisher signature.
 
-- Records keyboard presses/releases, mouse movement, left/right/middle/side buttons, and vertical/horizontal scrolling.
-- Replays with recorded timing and absolute desktop coordinates, including multiple monitors.
-- Playback speeds: 0.25x, 0.5x, 1x, 2x, 4x, and 8x.
-- Repeat a specific number of times or loop until stopped.
-- Save and open `.mtt` recording files.
-- Export a standalone EXE with the recording embedded. Open the exported app and press Play; it does not play automatically.
-- Compact window with Record, Play, and Stop up front; file actions, Always on top, and key settings live in the Menu button.
-- Always-on-top option, unsaved recording prompts, and release of simulated held keys/buttons on stop or completion.
+Download only from [this repository’s releases](https://github.com/Crabyy/myTinyTask/releases). Each release includes `SHA256SUMS.txt`, which you can use to check that your download matches the published executable:
 
-## Practical notes
+```powershell
+Get-FileHash .\myTinyTask.exe -Algorithm SHA256
+```
 
-Keep the target window, display scaling, and monitor arrangement the same as during recording. This uses screen positions, not image recognition. Timing is approximate; mouse movements are sampled at most every 8 ms and playback uses a Windows UI timer.
+If you have verified the source and choose to proceed, select **More info → Run anyway**, where Windows permits it. Do not disable SmartScreen or antivirus protection. If Windows reports a specific threat rather than an unrecognized app, stop and investigate that warning separately.
 
-This is an independent implementation, not a binary or pixel-for-pixel copy. TinyTask `.rec` files are not supported. Shortcut choices are saved beside the executable in `myTinyTask.settings.json` and restored on launch. Exported apps have their own settings file and initially use the default keys. Exported apps require Windows with .NET Framework 4.x, available on supported Windows systems. Elevated apps can block playback from a non-elevated recorder, and some games or protected applications may not accept simulated input. See Microsoft's [SendInput documentation](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-sendinput).
+See [Microsoft’s explanation of SmartScreen reputation](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/smartscreen-reputation). Code signing can identify the publisher, but does not guarantee that a new release will avoid reputation warnings.
 
-Recordings stay local. Input is retained only while recording is enabled, and written only when you save or export. Saved recordings contain the keys you recorded, so avoid including passwords or other secrets.
+## Record your first task
 
-## Build and verify
+1. Open the application you want to use.
+2. Press **F8** to start recording, then perform your actions.
+3. Press **F8** again to finish.
+4. Press **F9** to replay. You have two seconds to focus the target window.
+5. Press **F12** to stop playback or cancel a countdown.
 
-Source: `src/Program.cs`. The app icon is `assets/app.ico`; regenerate it with `tools/make-icon.ps1`. Double-click `build.cmd` to rebuild using the Windows .NET Framework C# compiler. Close the running app before rebuilding.
+The Record, Play, and Stop buttons perform the same actions. Recording captures mouse movement, button presses, scrolling, and keystrokes. Input in the recorder’s own window is excluded. Use F8 to finish without moving the mouse back to the recorder.
 
-Run `test.cmd` to execute the built-in checks. Tests briefly open a temporary text window and simulate the letter A. Let the test finish without switching windows. Results are saved in `test-results.txt`; a UI rendering is saved as `preview.png`.
+### Keyboard shortcuts
 
-Checks cover serialization, malformed timing and invalid-key rejection, native structure sizing, input conversion, Windows hook installation, window lifecycle, real keyboard playback into a temporary text box, repeat count, stop cleanup, countdown cancellation, and standalone EXE compilation. Manual recording across your chosen applications, side mouse buttons, mixed-DPI monitor arrangements, and elevated applications still need practical testing.
+| Key | Action |
+| --- | --- |
+| F8 | Start or finish recording |
+| F9 | Start playback, or stop an active playback |
+| F12 | Stop recording, playback, or a countdown |
 
-Shortcut regression checks: run `myTinyTask.exe --hotkey-test`. These test custom key dispatch, repeat suppression, using Stop while Play is still held, suspension in settings, duplicate/unsupported key validation, and saving/reloading settings without changing your settings file.
+Use **Menu → Customize keys** to assign an additional single key to each action. F8, F9, and F12 remain active. Choose **None** to remove an extra key, or **Reset extras** to clear all of them. Modifier combinations such as Ctrl+R are not supported.
 
-## Versioning and releases
+These shortcuts are reserved while myTinyTask is open. Close the app to return them to other applications.
 
-The current release is **1.9.0**. `VERSION` is the single source for the build's version; the build generates assembly metadata from it. The window title shows the same version. Windows Properties > Details shows product version `1.9.0` and file version `1.9.0.0`. Exported macro EXEs retain the app version that created them. Recording file schema version remains separately managed as version 1.
+## Playback
 
-For future changes, update `VERSION` and add a dated entry to `CHANGELOG.md`, then run `build.cmd`:
+Choose one of two modes:
 
-- **Patch** (`1.9.1`): compatible fixes or maintenance.
-- **Minor** (`1.10.0`): compatible new features.
-- **Major** (`2.0.0`): incompatible changes.
+| Mode | Behavior |
+| --- | --- |
+| **Speed** | Replay at 0.25×, 0.5×, 1×, 2×, 4×, or 8× the recorded speed. |
+| **Run every** | Replay the entire recording at a set interval in seconds, minutes, or hours, using its original speed. |
 
-The default build updates only `myTinyTask.exe`. Close the app before rebuilding. The previous EXE is kept temporarily during deployment for rollback on failure, then removed.
+The inactive mode’s controls are grayed out. **Repeat** sets the total number of runs; **Loop until stopped** continues until you stop it. **Completed loops** counts finished runs, remains visible after stopping, and resets on the next playback.
 
-Use `build.cmd -Package` when you need a distributable release: it creates `releases/<version>/` and `releases/myTinyTask-<version>.zip` with source, documentation, and a SHA-256 checksum. Add `-NoDeploy` to package without updating the main EXE. Bump VERSION before publishing changed releases. Settings and recordings are excluded; nothing is uploaded. Test the release before distributing it.
+For example, to repeat a task every five minutes, select **Run every → 5 minutes**, enable **Loop until stopped**, and press Play. The first run starts after the two-second countdown. The interval is measured between the starts of subsequent runs. If a recording takes longer than the interval, it finishes before the next run begins. Runs do not overlap.
 
-The initial 1.0.0 and 1.1.0 entries in the changelog are retrospective labels for the earlier unversioned builds.
+Keep the app running and the computer awake. Playback mode, speed, interval, and repeat settings apply to the current session; they are not included in saved recordings or exported executables.
 
-## Saved recordings (v1.4.0)
+## Save, open, and export
 
-Choose **Menu → Saved recordings → recording name** to load a macro directly, then press **Play** or F9. The menu remembers up to 50 files you save or open, and discovers `.mtt` files beside the app or inside a `Recordings` subfolder. For recordings already saved elsewhere, use **Browse…** once to add them. Missing files are hidden; hover over an entry to see its full path. Unsaved work is protected by the usual Save prompt.
+- **Menu → Save** saves a recording as an `.mtt` file.
+- **Menu → Open** loads a recording from disk.
+- **Menu → Saved recordings** lists recently saved or opened files, plus `.mtt` files in the app folder and its `Recordings` subfolder. It remembers up to 50 recently used paths. Use **Browse** to add a file saved elsewhere.
+- **Menu → Export EXE** creates an executable with the recording embedded. Open it and press Play to run it. Exported macros require the same Windows/.NET environment as the recorder.
 
-The list persists in `myTinyTask.recordings.json` beside the executable. This is app data used by the menu; keep it to retain your list. Selecting a recording only loads it and does not start playback.
-
-## Run every (v1.5.0)
-
-To replay a recording once every five minutes, load it, select **Run every**, choose **5 minutes**, then check **Loop until stopped** (or set Repeat to a specific number of runs). Press Play. The first run starts after the usual two-second countdown; subsequent runs start five minutes apart. Recorded delays within each run still apply at their original speed (1x). Speed and Run every are mutually exclusive modes: select either radio button and the other mode's inputs are grayed out. Returning to Speed restores your previous speed selection.
-
-The interval applies to the entire recording, including multiple clicks and keystrokes. If a run lasts longer than the interval, the next run starts after it finishes; runs never overlap or accumulate missed runs. F12 stops playback or the waiting countdown. Interval controls are session settings and are not stored in recording files or exported EXEs. Keep the app running and the computer awake for regular timing.
-
-**Completed loops** shows how many full replays finished in the last playback session. It stays visible while waiting and after stopping, and resets when you start playback again. Stopping midway through a replay does not count that incomplete loop.
+Only one recorder or exported macro from the current version can be open in a Windows session. Close the running app before opening an exported macro. Older exports may not enforce this restriction.
 
 ## Updates
 
-Starting with v1.9.0, the app checks the official GitHub Releases page in the background on launch. When a newer downloadable stable release exists, a popup shows the version and release notes, with **Download update**, **Later**, and **Skip this version**. It waits until the app is idle and focused. Later dismisses the popup until a future launch; Skip remembers that specific version. Use **Menu > Check for updates** to check manually, including skipped versions. Uncheck **Menu > Check for updates on startup** to turn off automatic checks.
+The app checks GitHub Releases on startup. When a newer stable version is available, it shows the release notes with **Download update**, **Later**, and **Skip this version**. The popup waits until the app is idle and focused.
 
-Download update opens the official release page. Download the new EXE, save your work, close the app, then replace only `myTinyTask.exe`. Keep your recordings and settings. This version does not install updates automatically. Update preferences are stored in `%LOCALAPPDATA%\myTinyTask\updates.json`. The check sends an HTTPS request to GitHub for release metadata; no recordings or keystrokes are uploaded. Exported macro EXEs do not check for updates.
+**Download update** opens the release page in your browser. Save your work, close myTinyTask, and replace its executable with the new download. Keep your recordings and settings files. Updates are not installed automatically.
 
-For maintainers, see [PUBLISHING.md](PUBLISHING.md) for publishing subsequent versions and their release notes.
+Use **Menu → Check for updates** to check manually, including versions you previously skipped. To disable startup checks, uncheck **Menu → Check for updates on startup**. Exported macro executables do not check for recorder updates.
+
+## Files and privacy
+
+Recordings stay on your computer. The update checker contacts GitHub for release metadata; it does not upload recordings or keystrokes.
+
+| File | Purpose |
+| --- | --- |
+| `*.mtt` | Saved mouse and keyboard recordings |
+| `myTinyTask.settings.json` | Additional keyboard shortcuts, stored beside the app |
+| `myTinyTask.recordings.json` | Saved-recordings menu history, stored beside the app |
+| `%LOCALAPPDATA%\myTinyTask\updates.json` | Startup update preference and skipped version |
+
+Recordings contain the keys you type. Avoid recording passwords or other sensitive information, and review recordings before sharing them.
+
+## Limitations
+
+- Playback uses screen coordinates. Keep target windows, display scaling, and monitor positions consistent with the recording.
+- Timing is approximate and depends on Windows scheduling and the target application’s response time.
+- Windows can prevent input from reaching an application running with higher privileges. Some games and protected applications also reject simulated input.
+- TinyTask `.rec` files are not supported. myTinyTask is an independent implementation.
+
+## Build and test
+
+Close the app, then run `build.cmd` to compile it with the Windows .NET Framework C# compiler. Source code is in `src/Program.cs`; the icon is in `assets/app.ico`.
+
+| Command | Purpose |
+| --- | --- |
+| `build.cmd` | Build the main executable |
+| `build.cmd -Package` | Build the executable and a versioned release ZIP |
+| `build.cmd -Package -NoDeploy` | Create a release package without replacing the main executable |
+| `test.cmd` | Run regression checks, including keyboard playback in a temporary test window |
+| `myTinyTask.exe --hotkey-test` | Run checks without injecting playback input |
+
+The full test opens a temporary window and types into it; leave that window focused until it finishes. Tests write their results and UI previews to the executable’s folder. They do not replace practical testing in your target applications.
+
+`VERSION` controls executable version metadata. See [PUBLISHING.md](PUBLISHING.md) for the release process.
