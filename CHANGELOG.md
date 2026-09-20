@@ -4,6 +4,20 @@ Application changes, newest first. Versions use `MAJOR.MINOR.PATCH`: breaking ch
 
 Version 1.9.0 is the first public GitHub release. Earlier entries document development builds; 1.0.0 and 1.1.0 were assigned retrospectively to builds that did not yet include version metadata.
 
+## 1.10.0 — 2026-09-20
+
+- Renamed the app to **myTaskTiny**, including the executable, interface, release packages, and documentation.
+- Added migration of previous settings without overwriting existing preferences. Recordings and v1.9 update checks remain compatible.
+- Added green playback and amber countdown indicators, a red active Stop button, activity in the window title, and explicit Stopped and Finished messages.
+- Updated the Update and Uninstall dialogs with consistent footer buttons and more compact layouts. Release notes open without selected text.
+- Grouped settings in **Menu** and placed Uninstall last.
+- Added **Menu → Uninstall** with a file review and permanent-deletion confirmation. It removes the app and settings after closing; recordings and exported macros are optional.
+- Added tracking of newly saved recordings and exports for uninstall. Older or moved files can be added manually.
+- Preserved unselected files, source code, nonempty folders, and files modified after the uninstall review.
+- Prevented shortcuts from starting recording or playback while a file dialog or confirmation is open.
+- Fixed interval countdowns longer than 24 hours and preserved file-tracking warnings after export.
+- Preserved release-note text when publishing through Windows PowerShell.
+
 ## 1.9.1 — 2026-09-19
 
 - Custom shortcuts now replace their defaults. Buttons and tooltips show the active keys.

@@ -17,6 +17,38 @@ internal static class AppVersion {
     }
 }
 
+internal static class AppIdentity {
+    public const string Name="myTaskTiny";
+    // Retained only to migrate existing installations and coordinate with old versions.
+    public const string LegacyName="myTinyTask";
+    public const string Repository="Crabyy/"+Name;
+    public const string LegacyRepository="Crabyy/"+LegacyName;
+    public static void ImportSettings(string executable,string localData) {
+        if(!string.Equals(Path.GetFileNameWithoutExtension(executable),Name,StringComparison.OrdinalIgnoreCase))return;
+        foreach(var suffix in new string[]{"settings.json","recordings.json","created-files.json"}) {
+            CopyIfMissing(Path.Combine(Path.GetDirectoryName(executable),LegacyName+"."+suffix),Path.ChangeExtension(executable,suffix));
+        }
+        CopyIfMissing(Path.Combine(localData,LegacyName,"updates.json"),Path.Combine(localData,Name,"updates.json"));
+    }
+    static void CopyIfMissing(string oldPath,string newPath) {
+        if(File.Exists(oldPath)&&!File.Exists(newPath)){Directory.CreateDirectory(Path.GetDirectoryName(newPath));File.Copy(oldPath,newPath,false);}
+    }
+    public static void Test() {
+        string root=Path.Combine(Path.GetTempPath(),Name+"-migration-"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(root);
+        try {
+            string exe=Path.Combine(root,Name+".exe"),data=Path.Combine(root,"local-data");
+            foreach(var suffix in new string[]{"settings.json","recordings.json","created-files.json"})File.WriteAllText(Path.Combine(root,LegacyName+"."+suffix),"legacy fixture");
+            Directory.CreateDirectory(Path.Combine(data,LegacyName));File.WriteAllText(Path.Combine(data,LegacyName,"updates.json"),"legacy updates");
+            ImportSettings(exe,data);
+            foreach(var suffix in new string[]{"settings.json","recordings.json","created-files.json"})if(File.ReadAllText(Path.ChangeExtension(exe,suffix))!="legacy fixture")throw new Exception("Legacy file migration failed.");
+            if(File.ReadAllText(Path.Combine(data,Name,"updates.json"))!="legacy updates")throw new Exception("Update preferences migration failed.");
+            File.WriteAllText(Path.ChangeExtension(exe,"settings.json"),"new settings");ImportSettings(exe,data);
+            if(File.ReadAllText(Path.ChangeExtension(exe,"settings.json"))!="new settings"||!File.Exists(Path.Combine(root,LegacyName+".settings.json")))throw new Exception("Migration overwrote existing data.");
+            string export=Path.Combine(root,"exported.exe");ImportSettings(export,data);if(File.Exists(Path.ChangeExtension(export,"settings.json")))throw new Exception("Export imported recorder settings.");
+        }finally{Directory.Delete(root,true);}
+    }
+}
+
 public class ReleaseAsset { public string name {get;set;} public string state {get;set;} public long size {get;set;} }
 public class ReleaseInfo {
     public string tag_name {get;set;}
@@ -25,7 +57,8 @@ public class ReleaseInfo {
     public bool prerelease {get;set;}
     public List<ReleaseAsset> assets {get;set;}
     public Version Number {get {return UpdateService.ParseVersion(tag_name);}}
-    public string Page {get {return "https://github.com/Crabyy/myTinyTask/releases/tag/"+Uri.EscapeDataString(tag_name);}}
+    internal string SourceRepository;
+    public string Page {get {return "https://github.com/"+(SourceRepository??AppIdentity.Repository)+"/releases/tag/"+Uri.EscapeDataString(tag_name);}}
 }
 public class UpdatePreferences {
     public bool CheckOnStartup {get;set;}
@@ -41,7 +74,6 @@ public class UpdatePreferences {
     }
 }
 internal static class UpdateService {
-    public const string Endpoint="https://api.github.com/repos/Crabyy/myTinyTask/releases/latest";
     public static Version ParseVersion(string tag) {
         if(string.IsNullOrEmpty(tag))return null;
         if(tag.StartsWith("v",StringComparison.OrdinalIgnoreCase))tag=tag.Substring(1);
@@ -52,7 +84,7 @@ internal static class UpdateService {
         var release=Recording.Serializer().Deserialize<ReleaseInfo>(json);
         if(release==null||release.draft||release.prerelease||release.Number==null)return null;
         // A tag or source-only release is not an installable application update.
-        if(release.assets==null||!release.assets.Exists(a=>a!=null&&a.state=="uploaded"&&a.size>0&&(a.name=="myTinyTask.exe"||a.name=="myTinyTask-"+release.Number+".zip")))return null;
+        if(release.assets==null||!release.assets.Exists(a=>a!=null&&a.state=="uploaded"&&a.size>0&&(a.name=="myTaskTiny.exe"||a.name=="myTaskTiny-"+release.Number+".zip"||a.name==AppIdentity.LegacyName+".exe"||a.name==AppIdentity.LegacyName+"-"+release.Number+".zip")))return null;
         return release;
     }
     public static bool ShouldOffer(ReleaseInfo release,string current,string skipped,bool manual) {
@@ -60,9 +92,12 @@ internal static class UpdateService {
         return release!=null&&number!=null&&release.Number>number&&(manual||!string.Equals(release.Number.ToString(),skipped,StringComparison.Ordinal));
     }
     public static ReleaseInfo Fetch() {
+        return FetchFrom(AppIdentity.Repository)??FetchFrom(AppIdentity.LegacyRepository);
+    }
+    static ReleaseInfo FetchFrom(string repository) {
         System.Net.ServicePointManager.SecurityProtocol|=System.Net.SecurityProtocolType.Tls12;
-        var request=(System.Net.HttpWebRequest)System.Net.WebRequest.Create(Endpoint);
-        request.UserAgent="myTinyTask/"+AppVersion.Current;
+        var request=(System.Net.HttpWebRequest)System.Net.WebRequest.Create("https://api.github.com/repos/"+repository+"/releases/latest");
+        request.UserAgent="myTaskTiny/"+AppVersion.Current;
         request.Accept="application/vnd.github+json";request.Headers["X-GitHub-Api-Version"]="2022-11-28";
         request.Timeout=15000;request.ReadWriteTimeout=15000;
         try {
@@ -70,36 +105,40 @@ internal static class UpdateService {
             using(var reader=new StreamReader(response.GetResponseStream())) {
                 var content=new System.Text.StringBuilder();var buffer=new char[4096];int count;
                 while((count=reader.Read(buffer,0,buffer.Length))>0){content.Append(buffer,0,count);if(content.Length>2000000)throw new IOException("Release response is too large.");}
-                return ParseRelease(content.ToString());
+                var release=ParseRelease(content.ToString());if(release!=null)release.SourceRepository=repository;return release;
             }
         }catch(System.Net.WebException ex){var response=ex.Response as System.Net.HttpWebResponse;if(response!=null){bool missing=response.StatusCode==System.Net.HttpStatusCode.NotFound;response.Dispose();if(missing)return null;}throw;}
     }
     public static void Test() {
         if(ParseVersion("v1.10.0")<=ParseVersion("1.9.9")||ParseVersion("1.0.0-beta")!=null||ParseVersion("../1.2.3")!=null)throw new Exception("Update version parsing failed.");
-        var release=new ReleaseInfo{tag_name="v2.0.0",body="Changes",assets=new List<ReleaseAsset>{new ReleaseAsset{name="myTinyTask.exe",state="uploaded",size=100}}};
+        var release=new ReleaseInfo{tag_name="v2.0.0",body="Changes",assets=new List<ReleaseAsset>{new ReleaseAsset{name="myTaskTiny.exe",state="uploaded",size=100}}};
         var parsed=ParseRelease(Recording.Serializer().Serialize(release));
         if(!ShouldOffer(parsed,"1.9.0",null,false)||ShouldOffer(parsed,"2.0.0",null,false)||ShouldOffer(parsed,"3.0.0",null,false)||ShouldOffer(parsed,"1.9.0","2.0.0",false)||!ShouldOffer(parsed,"1.9.0","2.0.0",true))throw new Exception("Update selection failed.");
-        if(parsed.Page!="https://github.com/Crabyy/myTinyTask/releases/tag/v2.0.0")throw new Exception("Update URL failed.");
+        if(parsed.Page!="https://github.com/Crabyy/myTaskTiny/releases/tag/v2.0.0")throw new Exception("Update URL failed.");
+        release.assets[0].name=AppIdentity.LegacyName+"-2.0.0.zip";if(ParseRelease(Recording.Serializer().Serialize(release))==null)throw new Exception("Legacy release compatibility failed.");
         release.prerelease=true;if(ParseRelease(Recording.Serializer().Serialize(release))!=null)throw new Exception("Prerelease offered.");release.prerelease=false;
         release.draft=true;if(ParseRelease(Recording.Serializer().Serialize(release))!=null)throw new Exception("Draft offered.");release.draft=false;
         release.assets.Clear();if(ParseRelease(Recording.Serializer().Serialize(release))!=null)throw new Exception("Source-only release offered.");
-        string dir=Path.Combine(Path.GetTempPath(),"myTinyTask-updates-"+Guid.NewGuid().ToString("N")),path=Path.Combine(dir,"updates.json");
+        string dir=Path.Combine(Path.GetTempPath(),"myTaskTiny-updates-"+Guid.NewGuid().ToString("N")),path=Path.Combine(dir,"updates.json");
         try{var prefs=new UpdatePreferences{CheckOnStartup=false,SkippedVersion="2.0.0"};prefs.Save(path);var loaded=UpdatePreferences.Load(path);if(loaded.CheckOnStartup||loaded.SkippedVersion!="2.0.0")throw new Exception("Update preferences failed.");prefs.CheckOnStartup=true;prefs.Save(path);if(!UpdatePreferences.Load(path).CheckOnStartup)throw new Exception("Update preferences replacement failed.");}finally{if(Directory.Exists(dir))Directory.Delete(dir,true);}
     }
 }
 internal class UpdateDialog : Form {
     public UpdateDialog(ReleaseInfo release) {
-        Text="Update available";AutoScaleDimensions=new SizeF(96,96);AutoScaleMode=AutoScaleMode.Dpi;ClientSize=new Size(540,395);StartPosition=FormStartPosition.CenterParent;FormBorderStyle=FormBorderStyle.FixedDialog;MaximizeBox=MinimizeBox=false;ShowInTaskbar=false;Font=new Font("Segoe UI",9);BackColor=Theme.Canvas;
-        Controls.Add(new Label{Text="myTinyTask "+release.Number+" is available",Location=new Point(18,16),AutoSize=true,Font=new Font("Segoe UI",13,FontStyle.Bold)});
-        Controls.Add(new Label{Text="Installed: "+AppVersion.Current+"   •   What's new",Location=new Point(18,49),AutoSize=true});
-        Controls.Add(new TextBox{Text=string.IsNullOrWhiteSpace(release.body)?"No release notes provided.":release.body.Replace("\r\n","\n").Replace("\n",Environment.NewLine),Multiline=true,ReadOnly=true,ScrollBars=ScrollBars.Vertical,Location=new Point(18,76),Size=new Size(504,229),BackColor=Color.White});
-        Controls.Add(new Label{Text="Download opens GitHub. Save your work and close the app before\nreplacing the EXE. Keep your recordings and settings files.",Location=new Point(18,314),Size=new Size(504,34)});
-        var skip=new Button{Text="Skip this version",Location=new Point(18,355),Size=new Size(126,28),DialogResult=DialogResult.Ignore};Controls.Add(skip);
-        var later=new Button{Text="Later",Location=new Point(290,355),Size=new Size(80,28),DialogResult=DialogResult.Cancel};Controls.Add(later);CancelButton=later;
-        var download=new Button{Text="Download update",Location=new Point(381,355),Size=new Size(141,28),DialogResult=DialogResult.Yes};Controls.Add(download);AcceptButton=download;
+        SuspendLayout();
+        Text="Update available";AutoScaleDimensions=new SizeF(96F,96F);AutoScaleMode=AutoScaleMode.Dpi;ClientSize=new Size(460,344);StartPosition=FormStartPosition.CenterParent;FormBorderStyle=FormBorderStyle.FixedDialog;MaximizeBox=MinimizeBox=false;ShowInTaskbar=false;ShowIcon=false;Font=new Font("Segoe UI",9);BackColor=Theme.Canvas;ForeColor=Theme.Text;
+        Controls.Add(new Label{Text="myTaskTiny "+release.Number+" is available",Location=new Point(20,16),AutoSize=true,Font=new Font("Segoe UI Semibold",12f)});
+        Controls.Add(new Label{Text="You have "+AppVersion.Current+"  ·  Release notes",Location=new Point(21,44),AutoSize=true,ForeColor=Theme.Muted});
+        var notes=new TextBox{Text=string.IsNullOrWhiteSpace(release.body)?"No release notes provided.":release.body.Replace("\r\n","\n").Replace("\n",Environment.NewLine),Multiline=true,ReadOnly=true,ScrollBars=ScrollBars.Vertical,BorderStyle=BorderStyle.FixedSingle,Location=new Point(20,68),Size=new Size(420,170),BackColor=Color.White,ForeColor=Theme.Text};Controls.Add(notes);
+        Controls.Add(new Label{Text="Download opens GitHub. Save your work and close the app before replacing the EXE. Your recordings and settings files are kept.",Location=new Point(20,248),Size=new Size(420,32),ForeColor=Theme.Muted});
+        var footer=Theme.Footer(new Rectangle(0,288,460,56));Controls.Add(footer);
+        var skip=new ToolButton{Text="Skip this version",Location=new Point(20,13),Size=new Size(124,30),DialogResult=DialogResult.Ignore};footer.Controls.Add(skip);
+        var later=new ToolButton{Text="Later",Location=new Point(228,13),Size=new Size(88,30),DialogResult=DialogResult.Cancel};footer.Controls.Add(later);CancelButton=later;
+        var download=new ToolButton{Text="Download update",Style=ButtonStyle.Primary,Location=new Point(324,13),Size=new Size(116,30),DialogResult=DialogResult.Yes};footer.Controls.Add(download);AcceptButton=download;
+        ActiveControl=download;Shown+=(s,e)=>notes.Select(0,0);
+        ResumeLayout(false);
     }
 }
-
 public class HotkeySettings {
     public int Record {get;set;}
     public int Play {get;set;}
@@ -132,19 +171,20 @@ public class HotkeySettings {
         finally {if(File.Exists(temp))File.Delete(temp);}
     }
 }
-internal enum Tone { Ready, Recording, Active, Warning }
-internal enum ButtonStyle { Secondary, Primary, Danger }
+internal enum Tone { Ready, Recording, Active, Waiting, Warning }
+internal enum ButtonStyle { Secondary, Primary, Danger, Playback, Waiting }
 
 internal static class Theme {
     public static readonly Color Canvas=Color.FromArgb(248,248,248),FooterFill=Color.FromArgb(240,240,240),Card=Color.White,Line=Color.FromArgb(224,224,224),Border=Color.FromArgb(196,196,196),
         Text=Color.FromArgb(28,28,28),Muted=Color.FromArgb(94,94,94),Disabled=Color.FromArgb(150,150,150),
         Accent=Color.FromArgb(0,95,184),AccentHover=Color.FromArgb(0,82,160),AccentDown=Color.FromArgb(0,68,135),
         Danger=Color.FromArgb(196,43,28),DangerHover=Color.FromArgb(172,36,23),DangerDown=Color.FromArgb(148,30,20),
-        Ready=Color.FromArgb(16,124,16),Warning=Color.FromArgb(157,93,0);
+        Ready=Color.FromArgb(16,124,16),PlaybackHover=Color.FromArgb(12,105,12),PlaybackDown=Color.FromArgb(8,85,8),
+        WaitingFill=Color.FromArgb(255,224,151),WaitingHover=Color.FromArgb(255,213,118),WaitingDown=Color.FromArgb(244,196,87),Warning=Color.FromArgb(130,78,0);
     static readonly float scale=DetectScale();
     static float DetectScale() { using(var g=Graphics.FromHwnd(IntPtr.Zero))return g.DpiX/96f; }
     public static int S(int value) { return (int)Math.Round(value*scale); }
-    public static Color ToneColor(Tone tone) { return tone==Tone.Recording?Danger:tone==Tone.Active?Accent:tone==Tone.Warning?Warning:Ready; }
+    public static Color ToneColor(Tone tone) { return tone==Tone.Recording?Danger:tone==Tone.Active?Ready:(tone==Tone.Warning||tone==Tone.Waiting)?Warning:Ready; }
     public static GraphicsPath Round(Rectangle r,int radius) {
         var path=new GraphicsPath();int d=Math.Max(1,radius*2);
         path.AddArc(r.X,r.Y,d,d,180,90);path.AddArc(r.Right-d,r.Y,d,d,270,90);path.AddArc(r.Right-d,r.Bottom-d,d,d,0,90);path.AddArc(r.X,r.Bottom-d,d,d,90,90);path.CloseFigure();return path;
@@ -194,9 +234,12 @@ internal class ToolButton : Button {
         Color fill,border,fore,keyFill,keyBorder,keyFore;
         if(!Enabled) {fill=Color.FromArgb(246,246,246);border=Color.FromArgb(226,226,226);fore=Theme.Disabled;keyFill=Color.Transparent;keyBorder=Color.FromArgb(214,214,214);keyFore=Theme.Disabled;}
         else if(style!=ButtonStyle.Secondary) {
-            bool danger=style==ButtonStyle.Danger;
-            fill=down?(danger?Theme.DangerDown:Theme.AccentDown):hot?(danger?Theme.DangerHover:Theme.AccentHover):(danger?Theme.Danger:Theme.Accent);
-            border=fill;fore=Color.White;keyFill=Color.FromArgb(38,255,255,255);keyBorder=Color.FromArgb(120,255,255,255);keyFore=Color.White;
+            bool danger=style==ButtonStyle.Danger,playback=style==ButtonStyle.Playback,waiting=style==ButtonStyle.Waiting;
+            Color normal=danger?Theme.Danger:playback?Theme.Ready:waiting?Theme.WaitingFill:Theme.Accent;
+            Color hover=danger?Theme.DangerHover:playback?Theme.PlaybackHover:waiting?Theme.WaitingHover:Theme.AccentHover;
+            Color pressed=danger?Theme.DangerDown:playback?Theme.PlaybackDown:waiting?Theme.WaitingDown:Theme.AccentDown;
+            fill=down?pressed:hot?hover:normal;
+            border=waiting?Theme.Warning:fill;fore=waiting?Theme.Text:Color.White;keyFill=Color.FromArgb(38,255,255,255);keyBorder=waiting?Theme.Warning:Color.FromArgb(120,255,255,255);keyFore=fore;
         } else {
             fill=down?Color.FromArgb(232,232,232):hot?Color.FromArgb(244,244,244):Color.White;
             border=hot||down?Color.FromArgb(166,166,166):Theme.Border;fore=Theme.Text;keyFill=Color.FromArgb(247,247,247);keyBorder=Color.FromArgb(208,208,208);keyFore=Theme.Muted;
@@ -229,12 +272,14 @@ internal class StatusLine : Control {
     public StatusLine() { SetStyle(ControlStyles.UserPaint|ControlStyles.AllPaintingInWmPaint|ControlStyles.OptimizedDoubleBuffer|ControlStyles.ResizeRedraw,true);TabStop=false; }
     protected override void Dispose(bool disposing) { if(disposing)headlineFont.Dispose();base.Dispose(disposing); }
     protected override void OnPaint(PaintEventArgs e) {
-        var g=e.Graphics;g.Clear(Parent==null?Theme.Canvas:Parent.BackColor);g.SmoothingMode=SmoothingMode.AntiAlias;
+        var g=e.Graphics;
+        Color background=tone==Tone.Active?Color.FromArgb(226,243,229):tone==Tone.Waiting?Color.FromArgb(255,242,209):tone==Tone.Recording?Color.FromArgb(253,232,230):(Parent==null?Theme.Canvas:Parent.BackColor);
+        g.Clear(background);g.SmoothingMode=SmoothingMode.AntiAlias;
         int dot=Theme.S(8);
         using(var brush=new SolidBrush(Theme.ToneColor(tone)))g.FillEllipse(brush,Theme.S(2),(Height-dot)/2,dot,dot);
         int x=dot+Theme.S(10);
         int headWidth=TextRenderer.MeasureText(headline,headlineFont,new Size(int.MaxValue,int.MaxValue),TextFormatFlags.NoPadding|TextFormatFlags.NoPrefix|TextFormatFlags.SingleLine).Width+Theme.S(2);
-        TextRenderer.DrawText(g,headline,headlineFont,new Rectangle(x,0,Math.Min(headWidth,Width-x),Height),Theme.Text,Theme.Line1);
+        TextRenderer.DrawText(g,headline,headlineFont,new Rectangle(x,0,Math.Min(headWidth,Width-x),Height),tone==Tone.Ready?Theme.Text:Theme.ToneColor(tone),Theme.Line1);
         int infoX=x+headWidth+Theme.S(10);
         if(info.Length>0&&infoX<Width)TextRenderer.DrawText(g,info,Font,new Rectangle(infoX,0,Width-infoX,Height),tone==Tone.Warning?Theme.Warning:Theme.Muted,Theme.Line1);
     }
@@ -305,10 +350,10 @@ internal class AboutDialog : Form {
     public AboutDialog(Icon appIcon) {
         SuspendLayout();
         AutoScaleDimensions=new SizeF(96F,96F);AutoScaleMode=AutoScaleMode.Dpi;
-        Text="About myTinyTask";ClientSize=new Size(340,164);FormBorderStyle=FormBorderStyle.FixedDialog;MaximizeBox=MinimizeBox=false;ShowInTaskbar=false;ShowIcon=false;
+        Text="About myTaskTiny";ClientSize=new Size(340,164);FormBorderStyle=FormBorderStyle.FixedDialog;MaximizeBox=MinimizeBox=false;ShowInTaskbar=false;ShowIcon=false;
         StartPosition=FormStartPosition.CenterParent;Font=new Font("Segoe UI",9);BackColor=Theme.Canvas;ForeColor=Theme.Text;
         if(appIcon!=null)try{Controls.Add(new PictureBox{Image=new Icon(appIcon,new Size(48,48)).ToBitmap(),SizeMode=PictureBoxSizeMode.Zoom,Location=new Point(20,22),Size=new Size(48,48)});}catch{}
-        Controls.Add(new Label{Text="myTinyTask",Font=new Font("Segoe UI Semibold",12f),AutoSize=true,Location=new Point(84,20)});
+        Controls.Add(new Label{Text="myTaskTiny",Font=new Font("Segoe UI Semibold",12f),AutoSize=true,Location=new Point(84,20)});
         Controls.Add(new Label{Text="Version "+AppVersion.Current,ForeColor=Theme.Muted,AutoSize=true,Location=new Point(85,47)});
         Controls.Add(new Label{Text="Developed by Craby",AutoSize=true,Location=new Point(85,70)});
         var footer=Theme.Footer(new Rectangle(0,108,340,56));Controls.Add(footer);
@@ -360,6 +405,7 @@ internal static class Native {
     [DllImport("user32.dll",SetLastError=true)] public static extern uint SendInput(uint count,Input[] inputs,int size);
     [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
     [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] public static extern bool IsWindowEnabled(IntPtr window);
     [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(Point point);
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr window);
     [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern uint RegisterWindowMessage(string name);
@@ -410,6 +456,170 @@ internal class RecordingLibrary {
     }
 }
 
+public class RemovalFile {
+    public string Path {get;set;}
+    public string Hash {get;set;}
+    public override string ToString() {return Path;}
+}
+public class RemovalPlan {
+    public List<RemovalFile> Files {get;set;}
+    public List<string> EmptyDirectories {get;set;}
+    public RemovalPlan(){Files=new List<RemovalFile>();EmptyDirectories=new List<string>();}
+}
+internal class CreatedFiles {
+    readonly string index;
+    public CreatedFiles(string executable){index=System.IO.Path.ChangeExtension(executable,"created-files.json");}
+    public List<string> Read() {
+        if(!File.Exists(index))return new List<string>();
+        try {return Recording.Serializer().Deserialize<List<string>>(File.ReadAllText(index))??new List<string>();}
+        catch {throw new IOException("The created-files list could not be read. Your files have not been changed.");}
+    }
+    public void Remember(string path) {
+        var paths=Read();path=System.IO.Path.GetFullPath(path);
+        if(!paths.Exists(p=>string.Equals(p,path,StringComparison.OrdinalIgnoreCase)))paths.Add(path);
+        string temp=index+".tmp";
+        try{File.WriteAllText(temp,Recording.Serializer().Serialize(paths));if(File.Exists(index))File.Replace(temp,index,null);else File.Move(temp,index);}finally{if(File.Exists(temp))File.Delete(temp);}
+    }
+}
+internal static class UninstallService {
+    public static string Hash(string path) {using(var stream=File.OpenRead(path))using(var hash=System.Security.Cryptography.SHA256.Create())return BitConverter.ToString(hash.ComputeHash(stream)).Replace("-","");}
+    public static void Add(List<RemovalFile> files,string path) {
+        if(string.IsNullOrWhiteSpace(path))return;path=Path.GetFullPath(path);
+        if(!File.Exists(path)||files.Exists(f=>string.Equals(f.Path,path,StringComparison.OrdinalIgnoreCase)))return;
+        files.Add(new RemovalFile{Path=path,Hash=Hash(path)});
+    }
+    public static List<RemovalFile> CoreFiles(string exe,string updateSettings) {
+        var files=new List<RemovalFile>();Add(files,exe);
+        foreach(var suffix in new string[]{"settings.json","recordings.json","created-files.json"})Add(files,Path.ChangeExtension(exe,suffix));
+        Add(files,updateSettings);
+        if(string.Equals(Path.GetFileNameWithoutExtension(exe),AppIdentity.Name,StringComparison.OrdinalIgnoreCase)) {
+            string oldExe=Path.Combine(Path.GetDirectoryName(exe),AppIdentity.LegacyName+".exe");
+            foreach(var suffix in new string[]{"settings.json","recordings.json","created-files.json"})Add(files,Path.ChangeExtension(oldExe,suffix));
+            if(updateSettings!=null)Add(files,Path.Combine(Path.GetDirectoryName(Path.GetDirectoryName(updateSettings)),AppIdentity.LegacyName,"updates.json"));
+        }
+        return files;
+    }
+    public static List<RemovalFile> DataFiles(string exe,IEnumerable<string> candidates) {
+        var files=new List<RemovalFile>();var queue=new Queue<string>(candidates);var visited=new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        while(queue.Count>0) {
+            var path=queue.Dequeue();if(string.IsNullOrWhiteSpace(path))continue;
+            string full;try{full=Path.GetFullPath(path);}catch{continue;}
+            if(string.Equals(full,exe,StringComparison.OrdinalIgnoreCase)||!visited.Add(full))continue;
+            var ext=Path.GetExtension(full);
+            if(ext.Equals(".mtt",StringComparison.OrdinalIgnoreCase))Add(files,full);
+            else if(ext.Equals(".exe",StringComparison.OrdinalIgnoreCase)) {
+                Add(files,full);
+                foreach(var suffix in new string[]{"settings.json","recordings.json","created-files.json"})Add(files,Path.ChangeExtension(full,suffix));
+                // Include outputs created by tracked exports; cycles are deduplicated by path.
+                foreach(var output in new CreatedFiles(full).Read())queue.Enqueue(output);
+            }
+        }
+        return files;
+    }
+    public static Process Start(RemovalPlan plan,int parent,bool quiet) {
+        string basePath=Path.Combine(Path.GetTempPath(),"myTaskTiny-remove-"+Guid.NewGuid().ToString("N"));
+        string script=basePath+".ps1",json=basePath+".json";
+        try {
+            File.WriteAllText(script,WorkerScript,System.Text.Encoding.UTF8);File.WriteAllText(json,Recording.Serializer().Serialize(plan),System.Text.Encoding.UTF8);
+            string powershell=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System),@"WindowsPowerShell\v1.0\powershell.exe");
+            return Process.Start(new ProcessStartInfo(powershell,"-NoProfile -NonInteractive -ExecutionPolicy Bypass -File \""+script+"\" -PlanPath \""+json+"\" -ParentId "+parent+(quiet?" -Quiet":"")){UseShellExecute=false,CreateNoWindow=true});
+        }catch{if(File.Exists(script))File.Delete(script);if(File.Exists(json))File.Delete(json);throw;}
+    }
+    public static void Test() {
+        string root=Path.Combine(Path.GetTempPath(),"myTaskTiny-removal-test-"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(root);
+        try {
+            string exe=Path.Combine(root,"myTaskTiny.exe"),recording=Path.Combine(root,"owned.mtt"),unrelated=Path.Combine(root,"keep.txt"),changed=Path.Combine(root,"changed.mtt"),export=Path.Combine(root,"macro.exe");
+            foreach(var path in new string[]{exe,recording,unrelated,changed,export})File.WriteAllText(path,"fixture");
+            var tracker=new CreatedFiles(exe);tracker.Remember(recording);tracker.Remember(recording);tracker.Remember(export);
+            if(new CreatedFiles(exe).Read().Count!=2)throw new Exception("Created-file tracking failed.");
+            var core=CoreFiles(exe,null);if(core.Exists(f=>f.Path==recording))throw new Exception("Recordings removed by default.");
+            var data=DataFiles(exe,new string[]{recording,recording,unrelated,exe,export});if(data.Count!=2)throw new Exception("Removal file filtering failed.");
+            using(var dialog=new UninstallDialog(core,data)) {
+                if(!dialog.DataUnchecked||dialog.Plan!=null)throw new Exception("Uninstall default/cancel state failed.");
+                dialog.Text="Uninstall layout test";dialog.Show();Application.DoEvents();
+                using(var bitmap=new Bitmap(dialog.Width,dialog.Height)){dialog.DrawToBitmap(bitmap,new Rectangle(0,0,dialog.Width,dialog.Height));bitmap.Save(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"uninstall-preview.png"));}
+                dialog.Close();if(dialog.Plan!=null)throw new Exception("Closing uninstall selected a deletion plan.");
+            }
+            string exportSettings=Path.ChangeExtension(export,"settings.json");File.WriteAllText(exportSettings,"{}");
+            new CreatedFiles(export).Remember(changed);new CreatedFiles(export).Remember(export);
+            var nested=DataFiles(exe,new string[]{export});if(!nested.Exists(f=>f.Path==changed)||!nested.Exists(f=>f.Path==exportSettings)||nested.Count!=4)throw new Exception("Export output/sidecar discovery failed.");
+            var plan=new RemovalPlan();plan.Files=core;Add(plan.Files,recording);Add(plan.Files,changed);File.WriteAllText(changed,"modified after review");plan.EmptyDirectories.Add(root);
+            using(var process=Start(plan,-1,true)){if(!process.WaitForExit(15000)||process.ExitCode!=1)throw new Exception("Changed-file protection failed.");}
+            if(File.Exists(exe)||File.Exists(recording)||!File.Exists(unrelated)||!File.Exists(export)||!File.Exists(changed)||!Directory.Exists(root))throw new Exception("Uninstall selected-file scope failed.");
+            var clean=new RemovalPlan();Add(clean.Files,export);using(var process=Start(clean,-1,true)){if(!process.WaitForExit(15000)||process.ExitCode!=0)throw new Exception("Removal worker failed.");}
+            if(File.Exists(export))throw new Exception("Selected export not removed.");
+            string waitingFile=Path.Combine(root,"wait-for-exit.mtt");File.WriteAllText(waitingFile,"fixture");
+            string powershell=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System),@"WindowsPowerShell\v1.0\powershell.exe");
+            using(var parent=Process.Start(new ProcessStartInfo(powershell,"-NoProfile -NonInteractive -Command Start-Sleep -Seconds 3"){UseShellExecute=false,CreateNoWindow=true})) {
+                var waiting=new RemovalPlan();Add(waiting.Files,waitingFile);
+                using(var worker=Start(waiting,parent.Id,true)) {
+                    System.Threading.Thread.Sleep(300);
+                    if(!parent.HasExited&&!File.Exists(waitingFile))throw new Exception("Uninstall deleted before parent exit.");
+                    if(!worker.WaitForExit(15000)||worker.ExitCode!=0||File.Exists(waitingFile))throw new Exception("Wait-for-exit deletion failed.");
+                }
+            }
+        }finally{Directory.Delete(root,true);}
+    }
+    public const string WorkerScript=@"param([Parameter(Mandatory=$true)][string]$PlanPath,[int]$ParentId,[switch]$Quiet)
+$ErrorActionPreference = 'Stop'
+$failures = New-Object 'System.Collections.Generic.List[string]'
+try {
+    $plan = Get-Content -LiteralPath $PlanPath -Raw | ConvertFrom-Json
+    $parent = $null
+    try { $parent = [Diagnostics.Process]::GetProcessById($ParentId) } catch [ArgumentException] {}
+    if ($parent -and -not $parent.WaitForExit(30000)) { throw 'The app did not close. No files were removed.' }
+    foreach ($file in $plan.Files) {
+        try {
+            if (-not (Test-Path -LiteralPath $file.Path -PathType Leaf)) { continue }
+            $hash = (Get-FileHash -LiteralPath $file.Path -Algorithm SHA256).Hash
+            if ($hash -ne $file.Hash) { throw 'File changed after confirmation; left in place.' }
+            Remove-Item -LiteralPath $file.Path -Force
+        } catch { $failures.Add($file.Path + ': ' + $_.Exception.Message) }
+    }
+    foreach ($directory in $plan.EmptyDirectories) {
+        try { if ([IO.Directory]::Exists($directory) -and [IO.Directory]::GetFileSystemEntries($directory).Length -eq 0) { [IO.Directory]::Delete($directory,$false) } } catch {}
+    }
+} catch { $failures.Add($_.Exception.Message) }
+finally {
+    Remove-Item -LiteralPath $PlanPath -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue
+}
+if (-not $Quiet) {
+    Add-Type -AssemblyName System.Windows.Forms
+    $message = if ($failures.Count -eq 0) { 'myTaskTiny was removed. Files you chose to keep were left in place.' } else { ""Some files could not be removed:`r`n`r`n"" + ($failures -join ""`r`n"") }
+    [void][Windows.Forms.MessageBox]::Show($message,'myTaskTiny uninstall')
+}
+if ($failures.Count -gt 0) { if ($Quiet) { $failures | Write-Output }; exit 1 }
+";
+}
+internal class UninstallDialog : Form {
+    readonly List<RemovalFile> core;
+    readonly CheckedListBox data;
+    public RemovalPlan Plan {get;private set;}
+    internal bool DataUnchecked {get{return data.CheckedItems.Count==0;}}
+    public UninstallDialog(List<RemovalFile> appFiles,List<RemovalFile> dataFiles) {
+        core=appFiles;SuspendLayout();AutoScaleDimensions=new SizeF(96F,96F);AutoScaleMode=AutoScaleMode.Dpi;Text="Uninstall myTaskTiny";ClientSize=new Size(560,400);StartPosition=FormStartPosition.CenterParent;FormBorderStyle=FormBorderStyle.FixedDialog;MaximizeBox=MinimizeBox=false;ShowInTaskbar=false;ShowIcon=false;Font=new Font("Segoe UI",9);BackColor=Theme.Canvas;ForeColor=Theme.Text;
+        Controls.Add(new Label{Text="The app and these settings files will be permanently removed:",Location=new Point(20,16),AutoSize=true});
+        var appList=new ListBox{Location=new Point(20,40),Size=new Size(520,68),HorizontalScrollbar=true,BorderStyle=BorderStyle.FixedSingle};foreach(var file in core)appList.Items.Add(file.Path);Controls.Add(appList);
+        Controls.Add(new Label{Text="Optional: select recordings or exported macros to delete. Unchecked files are kept.",Location=new Point(20,118),AutoSize=true});
+        data=new CheckedListBox{Location=new Point(20,140),Size=new Size(520,122),HorizontalScrollbar=true,CheckOnClick=true,BorderStyle=BorderStyle.FixedSingle};foreach(var file in dataFiles)data.Items.Add(file,false);Controls.Add(data);
+        var all=new CheckBox{Text="Select all listed recordings and exports",Location=new Point(20,273),AutoSize=true};all.CheckedChanged+=(s,e)=>{for(int i=0;i<data.Items.Count;i++)data.SetItemChecked(i,all.Checked);};Controls.Add(all);
+        var browse=new ToolButton{Text="Add files…",Location=new Point(428,268),Size=new Size(112,28)};browse.Click+=(s,e)=>{using(var dialog=new OpenFileDialog{Filter="Recordings and exports (*.mtt;*.exe)|*.mtt;*.exe",Multiselect=true}){if(dialog.ShowDialog(this)!=DialogResult.OK)return;try{foreach(var file in UninstallService.DataFiles(Assembly.GetExecutingAssembly().Location,dialog.FileNames)){bool exists=false;foreach(RemovalFile item in data.Items)if(string.Equals(item.Path,file.Path,StringComparison.OrdinalIgnoreCase))exists=true;if(!exists)data.Items.Add(file,true);}}catch(Exception ex){MessageBox.Show(this,ex.Message,"Cannot add file");}}};Controls.Add(browse);
+        Controls.Add(new Label{Text="Older exports or moved files may not be listed. Add them manually if needed.\nProject source, unrelated files, and nonempty folders are kept. This cannot be undone.",Location=new Point(20,304),Size=new Size(520,34),ForeColor=Theme.Muted});
+        var footer=Theme.Footer(new Rectangle(0,344,560,56));Controls.Add(footer);
+        var cancel=new ToolButton{Text="Cancel",DialogResult=DialogResult.Cancel,Location=new Point(320,13),Size=new Size(100,30)};footer.Controls.Add(cancel);CancelButton=cancel;
+        var remove=new ToolButton{Text="Uninstall",Style=ButtonStyle.Danger,Location=new Point(428,13),Size=new Size(112,30)};footer.Controls.Add(remove);
+        remove.Click+=(s,e)=>{
+            var plan=new RemovalPlan();plan.Files.AddRange(core);
+            foreach(RemovalFile item in data.CheckedItems)if(!plan.Files.Exists(f=>string.Equals(f.Path,item.Path,StringComparison.OrdinalIgnoreCase)))plan.Files.Add(item);
+            int selectedCount=plan.Files.Count;
+            if(MessageBox.Show(this,"Permanently delete "+selectedCount+" selected files and close myTaskTiny?","Confirm uninstall",MessageBoxButtons.YesNo,MessageBoxIcon.Warning,MessageBoxDefaultButton.Button2)!=DialogResult.Yes)return;
+            Plan=plan;DialogResult=DialogResult.OK;
+        };
+        ResumeLayout(false);
+    }
+}
+
 public class MainForm : Form {
     Recording macro=new Recording();
     bool recording,playing,pending,dirty,editingHotkeys;
@@ -420,7 +630,10 @@ public class MainForm : Form {
     ReleaseInfo availableUpdate;
     UpdatePreferences updatePreferences;
     ToolStripMenuItem updateItem,automaticUpdatesItem;
-    readonly string updatePreferencesPath=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"myTinyTask","updates.json");
+    readonly string updatePreferencesPath=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"myTaskTiny","updates.json");
+    CreatedFiles createdFiles;
+    bool uninstallApproved;
+    ToolStripMenuItem uninstallItem;
     RecordingLibrary library;
     string selectedPath;
     int position;
@@ -450,12 +663,14 @@ public class MainForm : Form {
     ComboBox intervalUnit;
     public MainForm() : this(false) {}
     internal MainForm(bool testMode) {
-        library=new RecordingLibrary(Path.ChangeExtension(Assembly.GetExecutingAssembly().Location,"recordings.json"),AppDomain.CurrentDomain.BaseDirectory);
+        createdFiles=new CreatedFiles(Assembly.GetExecutingAssembly().Location);
         string settingsWarning=null;
+        if(!testMode&&Assembly.GetExecutingAssembly().GetManifestResourceInfo("macro.mtt")==null)try{AppIdentity.ImportSettings(Assembly.GetExecutingAssembly().Location,Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData));}catch{settingsWarning="Some previous settings could not be imported.";}
+        library=new RecordingLibrary(Path.ChangeExtension(Assembly.GetExecutingAssembly().Location,"recordings.json"),AppDomain.CurrentDomain.BaseDirectory);
         if(!testMode)try{hotkeys=HotkeySettings.Load(settingsPath);}catch{settingsWarning="Shortcut settings could not be read. Default keys are active.";}
         SuspendLayout();
         AutoScaleDimensions=new SizeF(96F,96F);AutoScaleMode=AutoScaleMode.Dpi;
-        Text="myTinyTask v"+AppVersion.Current; ClientSize=new Size(400,128); FormBorderStyle=FormBorderStyle.FixedSingle; MaximizeBox=false;
+        Text="myTaskTiny v"+AppVersion.Current; ClientSize=new Size(400,128); FormBorderStyle=FormBorderStyle.FixedSingle; MaximizeBox=false;
         StartPosition=FormStartPosition.CenterScreen; Font=new Font("Segoe UI",9); BackColor=Theme.Canvas; ForeColor=Theme.Text;
         using(var embeddedIcon=Assembly.GetExecutingAssembly().GetManifestResourceStream("app.ico"))if(embeddedIcon!=null)try{Icon=new Icon(embeddedIcon);}catch{}
         var transport=new Font("Segoe UI Semibold",9.5f);
@@ -474,17 +689,20 @@ public class MainForm : Form {
         RefreshSavedMenu();
         menu.Items.Add(new ToolStripSeparator());
         topItem=new ToolStripMenuItem("Always on top"){CheckOnClick=true};topItem.CheckedChanged+=(s,e)=>TopMost=topItem.Checked;menu.Items.Add(topItem);
-        keysItem=MenuItem("Customize keys…",()=>CustomizeKeys());
-        menu.Items.Add(new ToolStripSeparator());
-        MenuItem("About myTinyTask…",()=>ShowAbout());
         // Exported macros are standalone tasks, not installations to replace with the recorder.
-        if(!testMode && Assembly.GetExecutingAssembly().GetManifestResourceInfo("macro.mtt")==null) {
+        bool recorderBuild=!testMode && Assembly.GetExecutingAssembly().GetManifestResourceInfo("macro.mtt")==null;
+        if(recorderBuild) {
             updatePreferences=UpdatePreferences.Load(updatePreferencesPath);
-            updateItem=MenuItem("Check for updates…",()=>CheckUpdates(true));
             automaticUpdatesItem=new ToolStripMenuItem("Check for updates on startup"){CheckOnClick=true,Checked=updatePreferences.CheckOnStartup};menu.Items.Add(automaticUpdatesItem);
             automaticUpdatesItem.CheckedChanged+=(s,e)=>Guard(()=>{updatePreferences.CheckOnStartup=automaticUpdatesItem.Checked;if(!automaticUpdatesItem.Checked)availableUpdate=null;updatePreferences.Save(updatePreferencesPath);});
             Shown+=(s,e)=>{if(updatePreferences.CheckOnStartup)CheckUpdates(false);};
         }
+        keysItem=MenuItem("Customize keys…",()=>CustomizeKeys());
+        menu.Items.Add(new ToolStripSeparator());
+        if(recorderBuild)updateItem=MenuItem("Check for updates…",()=>CheckUpdates(true));
+        MenuItem("About myTaskTiny…",()=>ShowAbout());
+        menu.Items.Add(new ToolStripSeparator());
+        uninstallItem=MenuItem("Uninstall…",()=>Uninstall());
         card=new StatusLine{Location=new Point(10,44),Size=new Size(380,20),TabStop=false};Controls.Add(card);
         speedMode=new RadioButton{Text="Speed",AutoSize=true,Checked=true,Location=new Point(10,71)};Controls.Add(speedMode);
         speed=new ComboBox{DropDownStyle=ComboBoxStyle.DropDownList,Location=new Point(96,69),Width=62}; speed.Items.AddRange(new object[]{"0.25x","0.5x","1x","2x","4x","8x"});speed.SelectedIndex=2;Controls.Add(speed);
@@ -502,11 +720,11 @@ public class MainForm : Form {
         timer.Interval=5;timer.Tick+=(s,e)=>Tick();timer.Start();
         keyProc=Keyboard;mouseProc=Mouse;
         Shown+=(s,e)=> { keyHook=Native.SetWindowsHookEx(13,keyProc,Native.GetModuleHandle(null),0);mouseHook=Native.SetWindowsHookEx(14,mouseProc,Native.GetModuleHandle(null),0);if(keyHook==IntPtr.Zero || mouseHook==IntPtr.Zero){MessageBox.Show("Cannot install Windows input hooks. Close and reopen the app.");Close();} };
-        FormClosing+=(s,e)=> { Stop(); if(!ConfirmDiscard()) {e.Cancel=true;return;} timer.Stop();Native.UnhookWindowsHookEx(keyHook);Native.UnhookWindowsHookEx(mouseHook); };
+        FormClosing+=(s,e)=> { Stop(); if(!uninstallApproved&&!ConfirmDiscard()) {e.Cancel=true;return;} timer.Stop();Native.UnhookWindowsHookEx(keyHook);Native.UnhookWindowsHookEx(mouseHook); };
         using(var embedded=Assembly.GetExecutingAssembly().GetManifestResourceStream("macro.mtt")) {if(embedded!=null)using(var reader=new StreamReader(embedded)){macro=Recording.Serializer().Deserialize<Recording>(reader.ReadToEnd());macro.Validate();fileName="Embedded recording";}}
         UpdateControls();
         SetStatus("Ready",Tone.Ready,Summary());
-        if(settingsWarning!=null)SetStatus("Ready",Tone.Warning,"Settings unreadable; default keys active");
+        if(settingsWarning!=null)SetStatus("Ready",Tone.Warning,settingsWarning);
     }
     void ToggleMenu() {
         if(menu.Visible)menu.Close(ToolStripDropDownCloseReason.CloseCalled);
@@ -523,7 +741,7 @@ public class MainForm : Form {
             // An initial click on the title bar activates the test window without invoking an action.
             int titleX=Left+Width/2,titleY=Top+12;
             if(Native.WindowFromPoint(new Native.Point{X=titleX,Y=titleY})!=Handle)throw new Exception("Menu test title bar is obscured.");
-            Native.Send(new MacroEvent{Message=0x201,X=titleX,Y=titleY});PumpMessages(80);
+            Native.Send(new MacroEvent{Message=0x201,X=titleX,Y=titleY});
             Native.Send(new MacroEvent{Message=0x202,X=titleX,Y=titleY});PumpMessages(120);
             Point point=menuButton.PointToScreen(new Point(menuButton.Width/2,menuButton.Height/2));
             if(Native.WindowFromPoint(new Native.Point{X=point.X,Y=point.Y})!=menuButton.Handle)throw new Exception("Menu test button is obscured.");
@@ -543,10 +761,11 @@ public class MainForm : Form {
         if(macro.Events.Count==0)return "No recording yet";
         return Count(macro.Events.Count,"event")+"  ·  "+(macro.Duration/1000.0).ToString("0.00")+" s";
     }
-    void Guard(Action action) {try { action(); } catch(Exception ex){Stop();MessageBox.Show(this,ex.Message,"myTinyTask",MessageBoxButtons.OK,MessageBoxIcon.Error);} }
+    void Guard(Action action) {try { action(); } catch(Exception ex){Stop();MessageBox.Show(this,ex.Message,"myTaskTiny",MessageBoxButtons.OK,MessageBoxIcon.Error);} }
     bool ConfirmDiscard() { if(!dirty)return true; var result=MessageBox.Show(this,"Save this recording before continuing?","Unsaved recording",MessageBoxButtons.YesNoCancel,MessageBoxIcon.Question);if(result==DialogResult.Cancel)return false;if(result==DialogResult.Yes){SaveMacro();return !dirty;}return true; }
     void UpdateControls() {
         bool busy=recording||playing||pending;
+        if(uninstallItem!=null)uninstallItem.Enabled=!busy;
         if(updateItem!=null)updateItem.Enabled=!busy&&!updateChecking;
         savedItem.Enabled=openItem.Enabled=saveItem.Enabled=exportItem.Enabled=keysItem.Enabled=loop.Enabled=!busy;repeats.Enabled=!busy&&!loop.Checked;
         speedMode.Enabled=intervalEnabled.Enabled=!busy;speed.Enabled=!busy&&speedMode.Checked;intervalValue.Enabled=intervalUnit.Enabled=!busy&&intervalEnabled.Checked;
@@ -554,7 +773,17 @@ public class MainForm : Form {
         record.Text=recording?"Finish":"Record";record.Style=recording?ButtonStyle.Danger:ButtonStyle.Primary;
         record.Hint=HotkeySettings.Name(hotkeys.Record);play.Hint=HotkeySettings.Name(hotkeys.Play);stop.Hint=HotkeySettings.Name(hotkeys.Stop);
         tips.SetToolTip(record,(recording?"Finish recording (":"Record (")+HotkeySettings.Name(hotkeys.Record)+")");tips.SetToolTip(play,"Play / stop playback ("+HotkeySettings.Name(hotkeys.Play)+")");tips.SetToolTip(stop,"Emergency stop ("+HotkeySettings.Name(hotkeys.Stop)+")");
-        Text="myTinyTask v"+AppVersion.Current+" — "+fileName+(dirty?" *":"");
+        UpdateActivityIndicators();
+    }
+    void UpdateActivityIndicators() {
+        bool busy=recording||playing||pending;
+        play.Style=(pending||waitingForNext)?ButtonStyle.Waiting:playing?ButtonStyle.Playback:ButtonStyle.Secondary;
+        stop.Style=busy?ButtonStyle.Danger:ButtonStyle.Secondary;
+        stop.Enabled=busy;
+        string state=recording?"Recording":pending?"Starting":waitingForNext?"Waiting":playing?"Playing":null;
+        Text=(state==null?"":"["+state+"] ")+"myTaskTiny v"+AppVersion.Current+" — "+fileName+(dirty?" *":"");
+        play.AccessibleDescription=pending?"Playback countdown. Press to cancel.":waitingForNext?"Waiting for the next run. Press to stop.":playing?"Recording is playing. Press to stop.":"Play the loaded recording.";
+        stop.AccessibleDescription=busy?"Stop the current recording, playback, or countdown.":"Nothing is running.";
     }
     void ToggleRecord() {
         if(playing||pending)return;
@@ -567,11 +796,12 @@ public class MainForm : Form {
         if(recording||macro.Events.Count==0)return;
         macro.Validate();playbackSpeed=intervalEnabled.Checked?1:new double[]{.25,.5,1,2,4,8}[speed.SelectedIndex];repeatCount=(int)repeats.Value;forever=loop.Checked;
         runInterval=intervalEnabled.Checked?(double)intervalValue.Value*new double[]{1000,60000,3600000}[intervalUnit.SelectedIndex]:0;waitingForNext=false;
-        position=0;iteration=0;UpdateLoopCount();pending=true;watch.Restart();SetStatus("Starting in 2 s",Tone.Active,"Switch to your target window");UpdateControls();
+        position=0;iteration=0;UpdateLoopCount();pending=true;watch.Restart();SetStatus("Starting in 2 s",Tone.Waiting,"Switch to your target window");UpdateControls();
     }
     void Stop() {
+        bool wasBusy=recording||playing||pending;
         if(recording){macro.Duration=Math.Min(86400000,watch.ElapsedMilliseconds);recording=false;}
-        pending=playing=waitingForNext=false;watch.Stop();ReleaseHeld();SetStatus("Ready",Tone.Ready,Summary());UpdateControls();
+        pending=playing=waitingForNext=false;watch.Stop();ReleaseHeld();SetStatus(wasBusy?"Stopped":"Ready",Tone.Ready,Summary());UpdateControls();
     }
     async void CheckUpdates(bool manual) {
         if(updateChecking)return;
@@ -582,12 +812,12 @@ public class MainForm : Form {
             if(UpdateService.ShouldOffer(release,AppVersion.Current,updatePreferences.SkippedVersion,manual)) {
                 availableUpdate=release;
                 OfferUpdateIfIdle();
-            } else if(manual)MessageBox.Show(this,release==null?"No downloadable stable release is available yet.":"You are up to date (v"+AppVersion.Current+").","myTinyTask updates");
-        }catch(Exception){if(manual&&!IsDisposed&&!Disposing)MessageBox.Show(this,"Could not check GitHub for updates. Check your internet connection and try again later.","myTinyTask updates",MessageBoxButtons.OK,MessageBoxIcon.Information);}
+            } else if(manual)MessageBox.Show(this,release==null?"No downloadable stable release is available yet.":"You are up to date (v"+AppVersion.Current+").","myTaskTiny updates");
+        }catch(Exception){if(manual&&!IsDisposed&&!Disposing)MessageBox.Show(this,"Could not check GitHub for updates. Check your internet connection and try again later.","myTaskTiny updates",MessageBoxButtons.OK,MessageBoxIcon.Information);}
         finally{updateChecking=false;if(!IsDisposed&&!Disposing)UpdateControls();}
     }
     void OfferUpdateIfIdle() {
-        if(availableUpdate==null||recording||playing||pending||editingHotkeys||OwnedForms.Length>0||menu.Visible||Native.GetForegroundWindow()!=Handle)return;
+        if(availableUpdate==null||recording||playing||pending||ShortcutsBlocked||OwnedForms.Length>0||menu.Visible||Native.GetForegroundWindow()!=Handle)return;
         var release=availableUpdate;availableUpdate=null;editingHotkeys=true;
         try {using(var dialog=new UpdateDialog(release)) {
             var result=dialog.ShowDialog(this);
@@ -599,28 +829,60 @@ public class MainForm : Form {
         if(availableUpdate!=null)Guard(OfferUpdateIfIdle);
         if(recording) {card.Info=Count(macro.Events.Count,"event")+"  ·  "+(watch.ElapsedMilliseconds/1000.0).ToString("0.0")+" s";if(watch.ElapsedMilliseconds>=86400000 || macro.Events.Count>=500000)Stop();return;}
         if(pending)card.Headline="Starting in "+Math.Max(1,(int)Math.Ceiling((2000-watch.ElapsedMilliseconds)/1000.0))+" s";
-        if(pending && watch.ElapsedMilliseconds>=2000) {pending=false;playing=true;watch.Restart();}
+        if(pending && watch.ElapsedMilliseconds>=2000) {pending=false;playing=true;watch.Restart();UpdateActivityIndicators();}
         if(!playing)return;
         Guard(()=>AdvancePlayback(watch.Elapsed.TotalMilliseconds,Native.Send));
     }
     void AdvancePlayback(double elapsed,Action<MacroEvent> send) {
         if(waitingForNext) {
-            if(elapsed>=runInterval){waitingForNext=false;position=0;watch.Restart();}
-            else {card.Headline="Waiting";card.Tone=Tone.Active;card.Info="Next run in "+TimeSpan.FromMilliseconds(runInterval-elapsed).ToString(@"hh\:mm\:ss");}
+            if(elapsed>=runInterval){waitingForNext=false;position=0;watch.Restart();UpdateActivityIndicators();SetStatus("Playing",Tone.Active,"Starting next run");}
+            else {card.Headline="Waiting";card.Tone=Tone.Waiting;card.Info="Next run in "+FormatRemaining(runInterval-elapsed);}
             return;
         }
+        UpdateActivityIndicators();
         int batch=0;
         while(position<macro.Events.Count && macro.Events[position].Time/playbackSpeed<=elapsed && batch++<100) {var e=macro.Events[position++];send(e);Track(e);}
         card.Headline="Playing";card.Tone=Tone.Active;card.Info="Pass "+(iteration+1)+(forever?" (looping)":" / "+repeatCount)+"  ·  "+position+" / "+macro.Events.Count+" events";
         if(position==macro.Events.Count && elapsed>=Math.Max(20,macro.Duration/playbackSpeed)) {
             ReleaseHeld();iteration++;UpdateLoopCount();
-            if(!forever&&iteration>=repeatCount)Stop();
-            else if(runInterval>elapsed){waitingForNext=true;}
+            if(!forever&&iteration>=repeatCount){Stop();SetStatus("Finished",Tone.Ready,Summary());}
+            else if(runInterval>elapsed){waitingForNext=true;UpdateActivityIndicators();SetStatus("Waiting",Tone.Waiting,"Next run in "+FormatRemaining(runInterval-elapsed));}
             else {position=0;watch.Restart();}
         }
     }
+    static string FormatRemaining(double milliseconds) {
+        var remaining=TimeSpan.FromSeconds(Math.Ceiling(Math.Max(0,milliseconds)/1000));
+        return (remaining.Days>0?remaining.Days+"d ":"")+remaining.ToString(@"hh\:mm\:ss");
+    }
     void UpdateLoopCount() {completedLoops.Text="Completed loops: "+iteration.ToString("N0");}
+    internal void TestActivityIndicators() {
+        timer.Stop();
+        try {
+            macro=new Recording{Duration=10000};macro.Events.Add(new MacroEvent{Time=0,Message=0x200});repeats.Value=2;
+            intervalEnabled.Checked=true;intervalValue.Value=5;intervalUnit.SelectedIndex=1;
+            using(var states=new Bitmap(Width,Height*4))using(var canvas=Graphics.FromImage(states)) {
+                StartPlayback();
+                if(play.Style!=ButtonStyle.Waiting||stop.Style!=ButtonStyle.Danger||!stop.Enabled||card.Tone!=Tone.Waiting)throw new Exception("Countdown indicators failed.");
+                SnapshotState(canvas,0);
+                pending=false;playing=true;AdvancePlayback(0,e=>{});
+                if(play.Style!=ButtonStyle.Playback||stop.Style!=ButtonStyle.Danger||card.Headline!="Playing"||card.Tone!=Tone.Active||!Text.StartsWith("[Playing]"))throw new Exception("Playback indicators failed.");
+                SnapshotState(canvas,1);
+                AdvancePlayback(10000,e=>{});
+                if(play.Style!=ButtonStyle.Waiting||stop.Style!=ButtonStyle.Danger||card.Headline!="Waiting"||card.Tone!=Tone.Waiting)throw new Exception("Interval waiting indicators failed.");
+                SnapshotState(canvas,2);
+                Stop();
+                if(play.Style!=ButtonStyle.Secondary||stop.Enabled||stop.Style!=ButtonStyle.Secondary||card.Headline!="Stopped")throw new Exception("Stop indicators failed.");
+                SnapshotState(canvas,3);
+                states.Save(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"activity-preview.png"));
+            }
+            repeats.Value=1;StartPlayback();pending=false;playing=true;AdvancePlayback(10000,e=>{});
+            if(card.Headline!="Finished"||stop.Enabled||play.Style!=ButtonStyle.Secondary)throw new Exception("Finished indicators failed.");
+            recording=true;UpdateControls();if(stop.Style!=ButtonStyle.Danger||!stop.Enabled)throw new Exception("Recording stop indicator failed.");recording=false;Stop();
+        }finally{intervalEnabled.Checked=false;speedMode.Checked=true;repeats.Value=1;timer.Start();}
+    }
+    void SnapshotState(Graphics target,int row) {using(var bitmap=new Bitmap(Width,Height)){DrawToBitmap(bitmap,new Rectangle(0,0,Width,Height));target.DrawImageUnscaled(bitmap,0,row*Height);}}
     internal void TestIntervals() {
+        if(FormatRemaining(90000000)!="1d 01:00:00"||FormatRemaining(1)!="00:00:01"||FormatRemaining(0)!="00:00:00")throw new Exception("Interval countdown formatting failed.");
         // Simulate elapsed time without waiting minutes or injecting desktop input.
         macro=new Recording{Duration=1000};macro.Events.Add(new MacroEvent{Time=0,Message=0x200});macro.Events.Add(new MacroEvent{Time=500,Message=0x200});
         speed.SelectedIndex=4;intervalEnabled.Checked=true;
@@ -664,13 +926,15 @@ public class MainForm : Form {
             dialog.Selection.Save(settingsPath);hotkeys=dialog.Selection;UpdateControls();SetStatus("Keys saved",Tone.Ready,"Custom shortcuts are active");
         }}finally{editingHotkeys=false;}
     }
+    // Native file dialogs disable the owner without necessarily changing Control.Enabled.
+    bool ShortcutsBlocked {get{return editingHotkeys||!Enabled||!Native.IsWindowEnabled(Handle);}}
     bool HandleShortcut(uint key,bool down) {
         // Always consume the release/repeat of a previously swallowed press, even if a dialog opened.
         if(shortcutHeld.Contains(key)){if(!down)shortcutHeld.Remove(key);return true;}
-        if(editingHotkeys || !down)return false;
+        if(ShortcutsBlocked || !down)return false;
         int action=hotkeys.ActionFor(key);if(action==0)return false;
         shortcutHeld.Add(key);
-        BeginInvoke(new Action(()=>Guard(()=>{if(editingHotkeys)return;if(action==1)ToggleRecord();else if(action==2)StartPlayback();else Stop();})));
+        BeginInvoke(new Action(()=>Guard(()=>{if(ShortcutsBlocked)return;if(action==1)ToggleRecord();else if(action==2)StartPlayback();else Stop();})));
         return true;
     }
     internal void TestHotkeys() {
@@ -687,13 +951,18 @@ public class MainForm : Form {
         HandleShortcut((uint)Keys.F10,true);Application.DoEvents();if(pending||playing)throw new Exception("Independent stop while play key held failed.");
         HandleShortcut((uint)Keys.F7,false);HandleShortcut((uint)Keys.F10,false);
         editingHotkeys=true;if(HandleShortcut((uint)Keys.F6,true))throw new Exception("Shortcut fired in settings.");editingHotkeys=false;
+        Enabled=false;
+        try{if(HandleShortcut((uint)Keys.F6,true))throw new Exception("Shortcut fired while a modal dialog disabled the owner.");}finally{Enabled=true;}
+        HandleShortcut((uint)Keys.F7,true);Enabled=false;Application.DoEvents();Enabled=true;HandleShortcut((uint)Keys.F7,false);
+        if(pending||playing)throw new Exception("Queued shortcut fired after a modal dialog opened.");
         hotkeys=new HotkeySettings();UpdateControls();
         if(hotkeys.ActionFor((uint)Keys.F8)!=1||hotkeys.ActionFor((uint)Keys.F9)!=2||hotkeys.ActionFor((uint)Keys.F12)!=3||record.Hint!="F8"||play.Hint!="F9"||stop.Hint!="F12")throw new Exception("Restore default keys failed.");
     }
     // A second launch broadcasts this message so the running window comes to the front instead of opening another copy.
-    internal static readonly uint ActivateMessage=Native.RegisterWindowMessage("myTinyTask.Activate");
+    internal static readonly uint ActivateMessage=Native.RegisterWindowMessage("myTaskTiny.Activate");
+    internal static readonly uint LegacyActivateMessage=Native.RegisterWindowMessage(AppIdentity.LegacyName+".Activate");
     protected override void WndProc(ref Message m) {
-        if(m.Msg==(int)ActivateMessage){if(WindowState==FormWindowState.Minimized)WindowState=FormWindowState.Normal;Activate();return;}
+        if(m.Msg==(int)ActivateMessage||m.Msg==(int)LegacyActivateMessage){if(WindowState==FormWindowState.Minimized)WindowState=FormWindowState.Normal;Activate();return;}
         base.WndProc(ref m);
     }
     IntPtr Keyboard(int code,IntPtr message,IntPtr data) {
@@ -701,13 +970,13 @@ public class MainForm : Form {
             if((k.Flags&0x10)==0) {
                 bool down=m==0x100||m==0x104;
                 if(HandleShortcut(k.Vk,down))return new IntPtr(1);
-                if(recording && Native.GetForegroundWindow()!=Handle) macro.Events.Add(new MacroEvent{Time=watch.ElapsedMilliseconds,Message=m,Data=k.Vk,Scan=k.Scan,Flags=k.Flags});
+                if(recording && !ShortcutsBlocked && Native.GetForegroundWindow()!=Handle) macro.Events.Add(new MacroEvent{Time=watch.ElapsedMilliseconds,Message=m,Data=k.Vk,Scan=k.Scan,Flags=k.Flags});
             }
         }
         return Native.CallNextHookEx(keyHook,code,message,data);
     }
     IntPtr Mouse(int code,IntPtr message,IntPtr data) {
-        if(code>=0&&recording){var m=(Native.MouseHook)Marshal.PtrToStructure(data,typeof(Native.MouseHook));int msg=message.ToInt32();long now=watch.ElapsedMilliseconds;
+        if(code>=0&&recording&&!ShortcutsBlocked){var m=(Native.MouseHook)Marshal.PtrToStructure(data,typeof(Native.MouseHook));int msg=message.ToInt32();long now=watch.ElapsedMilliseconds;
             if((m.Flags&1)==0 && (WindowState==FormWindowState.Minimized || !Bounds.Contains(m.Point.X,m.Point.Y)) && (msg!=0x200||now-lastMove>=8)) {
                 if(msg==0x200)lastMove=now;
                 uint value=(msg==0x20A||msg==0x20E)?unchecked((uint)(int)(short)(m.Data>>16)):(m.Data>>16);
@@ -724,10 +993,11 @@ public class MainForm : Form {
             if(string.Equals(Path.GetFullPath(d.FileName),Assembly.GetExecutingAssembly().Location,StringComparison.OrdinalIgnoreCase))throw new Exception("Choose a different name from the running app.");
             BuildExport(d.FileName);
             SetStatus("Exported",Tone.Ready,"Open the EXE and press Play");
+            RememberCreated(d.FileName);
         }
     }
     internal void BuildExport(string outputPath) {
-            string temp=Path.Combine(Path.GetTempPath(),"myTinyTask-"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(temp);
+            string temp=Path.Combine(Path.GetTempPath(),"myTaskTiny-"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(temp);
             try {
                 string source;
                 using(var stream=Assembly.GetExecutingAssembly().GetManifestResourceStream("Program.cs"))using(var reader=new StreamReader(stream)){source=reader.ReadToEnd();}
@@ -749,7 +1019,7 @@ public class MainForm : Form {
             } finally {Directory.Delete(temp,true);}
     }
     internal void TestPlayback() {
-        using(var target=new Form{Text="myTinyTask playback test",Size=new Size(320,150),StartPosition=FormStartPosition.CenterScreen}) {
+        using(var target=new Form{Text="myTaskTiny playback test",Size=new Size(320,150),StartPosition=FormStartPosition.CenterScreen}) {
             var input=new TextBox{Dock=DockStyle.Fill,Multiline=true};target.Controls.Add(input);target.Show();target.Activate();Native.SetForegroundWindow(target.Handle);input.Focus();Application.DoEvents();
             if(Native.GetForegroundWindow()!=target.Handle)throw new Exception("Test window could not gain focus.");
             macro=new Recording{Duration=80};
@@ -765,9 +1035,31 @@ public class MainForm : Form {
         }
     }
     void SaveMacro() {
-        using(var d=new SaveFileDialog{Filter="myTinyTask recording (*.mtt)|*.mtt",DefaultExt="mtt",FileName=fileName=="Untitled"?"My recording.mtt":fileName}) {
-            if(d.ShowDialog(this)!=DialogResult.OK)return;macro.Validate();string temp=d.FileName+".tmp";File.WriteAllText(temp,Recording.Serializer().Serialize(macro));if(File.Exists(d.FileName))File.Replace(temp,d.FileName,null);else File.Move(temp,d.FileName);fileName=Path.GetFileName(d.FileName);selectedPath=Path.GetFullPath(d.FileName);dirty=false;UpdateControls();RememberRecording(selectedPath);
+        using(var d=new SaveFileDialog{Filter="myTaskTiny recording (*.mtt)|*.mtt",DefaultExt="mtt",FileName=fileName=="Untitled"?"My recording.mtt":fileName}) {
+            if(d.ShowDialog(this)!=DialogResult.OK)return;macro.Validate();string temp=d.FileName+".tmp";File.WriteAllText(temp,Recording.Serializer().Serialize(macro));if(File.Exists(d.FileName))File.Replace(temp,d.FileName,null);else File.Move(temp,d.FileName);fileName=Path.GetFileName(d.FileName);selectedPath=Path.GetFullPath(d.FileName);dirty=false;UpdateControls();RememberRecording(selectedPath);RememberCreated(selectedPath);
         }
+    }
+    void RememberCreated(string path) {
+        try{createdFiles.Remember(path);}catch{SetStatus("File saved",Tone.Warning,"Could not track this file for uninstall");}
+    }
+    void Uninstall() {
+        if(recording||playing||pending)return;
+        editingHotkeys=true;
+        try {
+            if(!ConfirmDiscard())return;
+            string exe=Assembly.GetExecutingAssembly().Location;
+            bool exported=Assembly.GetExecutingAssembly().GetManifestResourceInfo("macro.mtt")!=null;
+            var core=UninstallService.CoreFiles(exe,exported?null:updatePreferencesPath);
+            var candidates=createdFiles.Read();candidates.AddRange(library.Available());
+            using(var dialog=new UninstallDialog(core,UninstallService.DataFiles(exe,candidates))) {
+                if(dialog.ShowDialog(this)!=DialogResult.OK)return;
+                dialog.Plan.EmptyDirectories.Add(Path.Combine(Path.GetDirectoryName(exe),"Recordings"));
+                dialog.Plan.EmptyDirectories.Add(Path.GetDirectoryName(exe));
+                if(!exported)dialog.Plan.EmptyDirectories.Add(Path.GetDirectoryName(updatePreferencesPath));
+                using(var helper=UninstallService.Start(dialog.Plan,Process.GetCurrentProcess().Id,false)) {if(helper==null)throw new IOException("Could not start uninstall.");}
+                uninstallApproved=true;Close();
+            }
+        } finally {editingHotkeys=false;}
     }
     void RememberRecording(string path) {
         try{library.Remember(path);}catch(Exception){SetStatus("Recording ready",Tone.Warning,"Could not save the recordings menu");}
@@ -794,9 +1086,9 @@ public class MainForm : Form {
         if(!ConfirmDiscard())return;
         macro=loaded;selectedPath=Path.GetFullPath(path);fileName=Path.GetFileName(path);dirty=false;Stop();RememberRecording(path);
     }
-    void OpenMacro() {using(var d=new OpenFileDialog{Filter="myTinyTask recording (*.mtt)|*.mtt"}){if(d.ShowDialog(this)==DialogResult.OK)LoadRecording(d.FileName);} }
+    void OpenMacro() {using(var d=new OpenFileDialog{Filter="myTaskTiny recording (*.mtt)|*.mtt"}){if(d.ShowDialog(this)==DialogResult.OK)LoadRecording(d.FileName);} }
     internal void TestLibrary() {
-        string folder=Path.Combine(Path.GetTempPath(),"myTinyTask-library-"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(folder);
+        string folder=Path.Combine(Path.GetTempPath(),"myTaskTiny-library-"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(folder);
         var original=library;
         try {
             string first=Path.Combine(folder,"first.mtt"),second=Path.Combine(folder,"second.mtt"),index=Path.Combine(folder,"history.json");
@@ -815,18 +1107,30 @@ public class MainForm : Form {
 internal static class Program {
     [STAThread] static void Main(string[] args) {
         Native.SetProcessDPIAware();Application.EnableVisualStyles();Application.SetCompatibleTextRenderingDefault(false);
-        if(args.Length>0&&(args[0]=="--self-test"||args[0]=="--hotkey-test")) {try {SelfTest(args[0]=="--self-test");File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"test-results.txt"),(args[0]=="--hotkey-test"?"PASS (shortcut tests; live playback not run): ":"PASS: ")+"update versions, skip/manual override, prerelease filtering and update preferences, exclusive playback modes, completed-loop display, reset and retention, interval timing, repeat completion, long recording non-overlap, stop while waiting, saved recordings discovery, persistence, deduplication, selection, missing and invalid files, serialization, timing validation, invalid key rejection, replacement shortcuts, restored defaults, active key labels, menu toggle, held-key repeat suppression, independent emergency stop, settings persistence, duplicate shortcut validation, input ABI, key conversion, mouse conversion, hook install/uninstall, UI lifecycle, standalone EXE compilation, app and exported EXE version metadata.");Environment.ExitCode=0;}catch(Exception ex){File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"test-results.txt"),"FAIL: "+ex);Environment.ExitCode=1;}return;}
+        if(args.Length>0&&(args[0]=="--self-test"||args[0]=="--hotkey-test")) {
+            Exception failure=null;
+            using(var context=new ApplicationContext())using(var runner=new Timer{Interval=50}) {
+                runner.Tick+=(sender,e)=> {runner.Stop();try{SelfTest(args[0]=="--self-test");}catch(Exception ex){failure=ex;}finally{context.ExitThread();}};
+                runner.Start();Application.Run(context);
+            }
+            Environment.ExitCode=failure==null?0:1;
+            File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"test-results.txt"),failure!=null?"FAIL: "+failure:(args[0]=="--self-test"?"PASS: full Windows regression suite, including live menu clicks and keyboard playback. ":"PASS: non-injecting regression suite. ")+"Uninstall tests: scoped deletion, changed-file protection, wait-for-exit, unchecked data, cancel, tracked exports and settings. Playback, countdown, waiting, stopped, and finished indicators passed. Name migration and legacy update compatibility passed. Existing shortcut, interval, recording, export, update, and version checks passed.");
+            return;
+        }
         if(args.Length>0&&args[0]=="--check-update-test") {try{var release=UpdateService.Fetch();File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"update-test-results.txt"),release==null?"PASS: no published downloadable release": "PASS: GitHub release "+release.tag_name+"; offer="+UpdateService.ShouldOffer(release,AppVersion.Current,null,false));}catch(Exception ex){File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"update-test-results.txt"),"FAIL: "+ex.Message);Environment.ExitCode=1;}return;}
         // One recorder at a time: two copies would both react to the same global shortcuts.
-        bool first;
-        using(var instance=new System.Threading.Mutex(true,"Local\\myTinyTask.SingleInstance",out first)) {
-            if(!first){Native.AllowSetForegroundWindow(-1);Native.PostMessage((IntPtr)0xFFFF,MainForm.ActivateMessage,IntPtr.Zero,IntPtr.Zero);return;}
+        bool first,legacyFirst;
+        using(var instance=new System.Threading.Mutex(true,"Local\\myTaskTiny.SingleInstance",out first))
+        using(var legacy=new System.Threading.Mutex(true,"Local\\"+AppIdentity.LegacyName+".SingleInstance",out legacyFirst)) {
+            if(!first||!legacyFirst){Native.AllowSetForegroundWindow(-1);Native.PostMessage((IntPtr)0xFFFF,MainForm.ActivateMessage,IntPtr.Zero,IntPtr.Zero);Native.PostMessage((IntPtr)0xFFFF,MainForm.LegacyActivateMessage,IntPtr.Zero,IntPtr.Zero);return;}
             Application.Run(new MainForm());
         }
     }
     static void Assert(bool condition,string message){if(!condition)throw new Exception(message);}
     static void SelfTest(bool livePlayback) {
+        AppIdentity.Test();
         UpdateService.Test();
+        UninstallService.Test();
         using(var dialog=new UpdateDialog(new ReleaseInfo{tag_name="v2.0.0",body="Example release notes\n- New feature\n- Bug fix"})) {
             dialog.Text="Update dialog layout test";dialog.Show();Application.DoEvents();
             using(var bitmap=new Bitmap(dialog.Width,dialog.Height)){dialog.DrawToBitmap(bitmap,new Rectangle(0,0,dialog.Width,dialog.Height));bitmap.Save(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"update-preview.png"));}
@@ -849,8 +1153,8 @@ internal static class Program {
         Assert(Marshal.SizeOf(typeof(Native.Input))==(IntPtr.Size==8?40:28),"Native INPUT ABI");var k=Native.Convert(r.Events[1]);Assert(k.Type==1&&k.Value.Key.Scan==30&&k.Value.Key.Flags==10,"Keyboard conversion");
         var m=Native.Convert(new MacroEvent{Message=0x20A,Data=unchecked((uint)-120)});Assert(m.Value.Mouse.Flags==0xC801&&m.Value.Mouse.Data==unchecked((uint)-120),"Wheel conversion");
         Native.Hook callback=(c,w,l)=>Native.CallNextHookEx(IntPtr.Zero,c,w,l);var kh=Native.SetWindowsHookEx(13,callback,Native.GetModuleHandle(null),0);var mh=Native.SetWindowsHookEx(14,callback,Native.GetModuleHandle(null),0);Assert(kh!=IntPtr.Zero&&mh!=IntPtr.Zero,"Install hooks");Native.UnhookWindowsHookEx(kh);Native.UnhookWindowsHookEx(mh);GC.KeepAlive(callback);
-        using(var f=new MainForm(true)){f.Show();Application.DoEvents();Assert(f.Visible,"Window visible");f.TestHotkeys();f.TestMenu(livePlayback);f.TestLibrary();f.TestIntervals();if(livePlayback)f.TestPlayback();
-            string exported=Path.Combine(Path.GetTempPath(),"myTinyTask-test-"+Guid.NewGuid().ToString("N")+".exe");
+        using(var f=new MainForm(true)){f.Show();Application.DoEvents();Assert(f.Visible,"Window visible");f.TestHotkeys();f.TestMenu(livePlayback);f.TestLibrary();f.TestIntervals();f.TestActivityIndicators();if(livePlayback)f.TestPlayback();
+            string exported=Path.Combine(Path.GetTempPath(),"myTaskTiny-test-"+Guid.NewGuid().ToString("N")+".exe");
             try {f.BuildExport(exported);Assert(new FileInfo(exported).Length>10000,"Export executable");Assert(FileVersionInfo.GetVersionInfo(exported).ProductVersion==AppVersion.Current,"Export version metadata");}finally{if(File.Exists(exported))File.Delete(exported);}
             using(var bitmap=new Bitmap(f.Width,f.Height)){f.DrawToBitmap(bitmap,new Rectangle(0,0,f.Width,f.Height));bitmap.Save(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"preview.png"));}
             using(var dialog=new HotkeyDialog(new HotkeySettings())){dialog.Show(f);Application.DoEvents();using(var bitmap=new Bitmap(dialog.Width,dialog.Height)){dialog.DrawToBitmap(bitmap,new Rectangle(0,0,dialog.Width,dialog.Height));bitmap.Save(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"keys-preview.png"));}dialog.Close();}

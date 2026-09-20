@@ -12,3 +12,6 @@ update-test-results.txt
 preview.png
 keys-preview.png
 update-preview.png
+*.created-files.json
+uninstall-preview.png
+activity-preview.png
