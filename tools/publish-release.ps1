@@ -17,18 +17,18 @@ try {
     $pattern = '(?ms)^## ' + [regex]::Escape($version) + ' [^\r\n]*\r?\n(.*?)(?=^## |\z)'
     $entry = [regex]::Match($changelog,$pattern)
     if (!$entry.Success) { throw 'Add a changelog entry for this version before publishing.' }
-    $notes = $entry.Groups[1].Value.Trim() + "`n`nDownload myTaskTiny.exe for the portable Windows app, or the ZIP for the app plus source and documentation. Save your work and close myTaskTiny before replacing its EXE. Keep your .mtt recordings and settings files."
+    $notes = $entry.Groups[1].Value.Trim() + "`n`nDownload **myTaskTiny.exe** to run the app, or **myTaskTiny-$version.zip** for the app, source code, and documentation.`n`nThe **myTinyTask-$version.zip** asset is an identical copy retained so v1.9 update checkers can recognize this release. You do not need to download both ZIPs.`n`nSave your work and close myTaskTiny before replacing its EXE. Keep your .mtt recordings and settings files."
     Set-Content -LiteralPath $notesFile -Value $notes -Encoding UTF8
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\build.ps1 -Package -NoDeploy
     if ($LASTEXITCODE -ne 0) { throw 'Build failed.' }
     $exe = Join-Path $root "releases\$version\myTaskTiny.exe"
     $test = Start-Process -FilePath $exe -ArgumentList '--hotkey-test' -PassThru -Wait
     if ($test.ExitCode -ne 0) { throw 'Regression checks failed; release was not published.' }
-    $assets = @($exe,(Join-Path $root "releases\myTaskTiny-$version.zip"),(Join-Path $root "releases\$version\SHA256SUMS.txt"))
+    $assets = @(($exe + "#myTaskTiny.exe (recommended)"),(Join-Path $root "releases\myTaskTiny-$version.zip"),(Join-Path $root "releases\$version\SHA256SUMS.txt"))
     # Keep this alias on every release so v1.9 clients can skip intermediate updates.
     $compatibilityZip = Join-Path $root "releases\myTinyTask-$version.zip"
     Copy-Item -LiteralPath $assets[1] -Destination $compatibilityZip -Force
-    $assets += $compatibilityZip
+    $assets += ($compatibilityZip + "#myTinyTask-$version.zip (legacy updater compatibility)")
     & gh release create $tag @assets --repo Crabyy/myTaskTiny --verify-tag --draft --title "myTaskTiny $version" --notes-file $notesFile
     if ($LASTEXITCODE -ne 0) { throw 'Release creation failed. Check GitHub before retrying.' }
     & gh release edit $tag --repo Crabyy/myTaskTiny --draft=false --latest

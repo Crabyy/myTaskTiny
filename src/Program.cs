@@ -123,18 +123,331 @@ internal static class UpdateService {
         try{var prefs=new UpdatePreferences{CheckOnStartup=false,SkippedVersion="2.0.0"};prefs.Save(path);var loaded=UpdatePreferences.Load(path);if(loaded.CheckOnStartup||loaded.SkippedVersion!="2.0.0")throw new Exception("Update preferences failed.");prefs.CheckOnStartup=true;prefs.Save(path);if(!UpdatePreferences.Load(path).CheckOnStartup)throw new Exception("Update preferences replacement failed.");}finally{if(Directory.Exists(dir))Directory.Delete(dir,true);}
     }
 }
+// Ask Windows Attachment Services to apply download-origin and antivirus policy.
+// A failure is propagated; the updater never removes a block or zone marking.
+internal static class AttachmentPolicy {
+    [ComImport,Guid("4125DD96-E03A-4103-8F70-E0597D803B9C")]
+    class AttachmentServices {}
+    [ComImport,Guid("73DB1241-1E85-4581-8E4F-A81E1D0F8C57"),InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IAttachmentExecute {
+        void SetClientTitle([MarshalAs(UnmanagedType.LPWStr)]string title);
+        void SetClientGuid(ref Guid guid);
+        void SetLocalPath([MarshalAs(UnmanagedType.LPWStr)]string path);
+        void SetFileName([MarshalAs(UnmanagedType.LPWStr)]string name);
+        void SetSource([MarshalAs(UnmanagedType.LPWStr)]string source);
+        void SetReferrer([MarshalAs(UnmanagedType.LPWStr)]string referrer);
+        void CheckPolicy();
+        void Prompt(IntPtr window,int prompt,out int action);
+        void Save();
+    }
+    public static void Apply(string path,Uri source) {
+        var service=(IAttachmentExecute)new AttachmentServices();
+        try {
+            service.SetClientTitle(AppIdentity.Name);
+            var id=new Guid("a92e7d76-257f-44a6-8c3d-cb5cbf061e68");service.SetClientGuid(ref id);
+            service.SetLocalPath(path);service.SetSource(source.AbsoluteUri);service.Save();
+        }finally{Marshal.ReleaseComObject(service);}
+    }
+}
+
+public class UpdatePlan {
+    public string Target {get;set;}
+    public string Directory {get;set;}
+    public string ExpectedHash {get;set;}
+    public string OriginalHash {get;set;}
+    public string StartupToken {get;set;}
+}
+internal static class AutoUpdate {
+    internal delegate void Downloader(Uri url,Stream output,long limit,System.Threading.CancellationToken cancel,Action<int> progress);
+    const long MaximumExecutableSize=50000000;
+    public static bool CanInstall(ReleaseInfo release) {
+        return release!=null&&release.assets!=null&&release.assets.Exists(a=>a!=null&&a.name=="myTaskTiny.exe"&&a.state=="uploaded"&&a.size>0&&a.size<=MaximumExecutableSize)&&release.assets.Exists(a=>a!=null&&a.name=="SHA256SUMS.txt"&&a.state=="uploaded"&&a.size>0&&a.size<=65536);
+    }
+    internal static string ReadHash(string text) {
+        string result=null;
+        foreach(string line in text.Split('\n')) {
+            var match=System.Text.RegularExpressions.Regex.Match(line.Trim(),@"^([a-fA-F0-9]{64})\s+\*?myTaskTiny\.exe$");
+            if(!match.Success)continue;
+            if(result!=null)throw new IOException("The release checksum is ambiguous.");
+            result=match.Groups[1].Value;
+        }
+        if(result==null)throw new IOException("The release has no valid checksum for myTaskTiny.exe.");
+        return result;
+    }
+    internal static bool AllowedDownload(Uri uri) {
+        return uri.Scheme==Uri.UriSchemeHttps&&uri.IsDefaultPort&&uri.UserInfo.Length==0&&(uri.Host=="github.com"||uri.Host=="release-assets.githubusercontent.com"||uri.Host=="objects.githubusercontent.com"||uri.Host=="github-releases.githubusercontent.com");
+    }
+    internal static void Download(Uri url,Stream output,long limit,System.Threading.CancellationToken cancel,Action<int> progress) {
+        System.Net.ServicePointManager.SecurityProtocol|=System.Net.SecurityProtocolType.Tls12;
+        for(int redirects=0;redirects<6;redirects++) {
+            cancel.ThrowIfCancellationRequested();
+            if(!AllowedDownload(url))throw new IOException("The update download is not on an approved GitHub HTTPS host.");
+            var request=(System.Net.HttpWebRequest)System.Net.WebRequest.Create(url);
+            request.UserAgent="myTaskTiny/"+AppVersion.Current;request.AllowAutoRedirect=false;request.Timeout=15000;request.ReadWriteTimeout=15000;
+            using(cancel.Register(()=>request.Abort())) {
+                try {
+                    using(var response=(System.Net.HttpWebResponse)request.GetResponse()) {
+                        int code=(int)response.StatusCode;
+                        if(code==301||code==302||code==303||code==307||code==308){url=new Uri(url,response.Headers["Location"]);continue;}
+                        if(code!=200||response.ContentLength>limit)throw new IOException("The update download has an unexpected size or status.");
+                        using(var input=response.GetResponseStream())CopyDownload(input,output,limit,response.ContentLength,cancel,progress);
+                        return;
+                    }
+                }catch(System.Net.WebException){cancel.ThrowIfCancellationRequested();throw;}
+            }
+        }
+        throw new IOException("The update download redirected too many times.");
+    }
+    internal static void CopyDownload(Stream input,Stream output,long limit,long length,System.Threading.CancellationToken cancel,Action<int> progress) {
+        var buffer=new byte[65536];long total=0;int count;
+        while(true) {
+            cancel.ThrowIfCancellationRequested();count=input.Read(buffer,0,buffer.Length);if(count==0)break;
+            total+=count;if(total>limit)throw new IOException("The update download is too large.");
+            output.Write(buffer,0,count);if(progress!=null)progress(length>0?(int)Math.Min(100,total*100/length):0);
+        }
+        if(length>=0&&total!=length)throw new IOException("The update download was incomplete.");
+    }
+    public static UpdatePlan Prepare(ReleaseInfo release,string target,System.Threading.CancellationToken cancel,Action<int> progress) {
+        var plan=Prepare(release,target,cancel,progress,Download);
+        try {
+            cancel.ThrowIfCancellationRequested();
+            AttachmentPolicy.Apply(Path.Combine(plan.Directory,"download.exe"),new Uri("https://github.com/"+AppIdentity.Repository+"/releases/download/"+Uri.EscapeDataString(release.tag_name)+"/myTaskTiny.exe"));
+            cancel.ThrowIfCancellationRequested();
+            if(!string.Equals(UninstallService.Hash(Path.Combine(plan.Directory,"download.exe")),plan.ExpectedHash,StringComparison.OrdinalIgnoreCase))throw new IOException("The update changed during Windows security verification.");
+            return plan;
+        }catch{Cleanup(plan);throw;}
+    }
+    internal static UpdatePlan Prepare(ReleaseInfo release,string target,System.Threading.CancellationToken cancel,Action<int> progress,Downloader download) {
+        if(!CanInstall(release)||!UpdateService.ShouldOffer(release,AppVersion.Current,null,true))throw new IOException("This release cannot be installed automatically. Use the release page instead.");
+        cancel.ThrowIfCancellationRequested();target=Path.GetFullPath(target);
+        var plan=new UpdatePlan{Target=target,StartupToken=Guid.NewGuid().ToString("N"),OriginalHash=UninstallService.Hash(target),Directory=Path.Combine(Path.GetDirectoryName(target),".myTaskTiny-update-"+Guid.NewGuid().ToString("N"))};
+        try {
+            Directory.CreateDirectory(plan.Directory);
+            string baseUrl="https://github.com/"+AppIdentity.Repository+"/releases/download/"+Uri.EscapeDataString(release.tag_name)+"/";
+            using(var checksum=new MemoryStream()) {
+                download(new Uri(baseUrl+"SHA256SUMS.txt"),checksum,65536,cancel,null);
+                plan.ExpectedHash=ReadHash(System.Text.Encoding.UTF8.GetString(checksum.ToArray()));
+            }
+            string staged=Path.Combine(plan.Directory,"download.exe");
+            using(var output=new FileStream(staged,FileMode.CreateNew,FileAccess.Write,FileShare.None))download(new Uri(baseUrl+"myTaskTiny.exe"),output,MaximumExecutableSize,cancel,progress);
+            cancel.ThrowIfCancellationRequested();
+            long expectedSize=release.assets.Find(a=>a!=null&&a.name=="myTaskTiny.exe").size;
+            if(new FileInfo(staged).Length!=expectedSize||!string.Equals(UninstallService.Hash(staged),plan.ExpectedHash,StringComparison.OrdinalIgnoreCase))throw new IOException("The downloaded update did not match the published checksum. Your current app has not been changed.");
+            var info=FileVersionInfo.GetVersionInfo(staged);
+            if(info.ProductName!=AppIdentity.Name||UpdateService.ParseVersion(info.ProductVersion)!=release.Number)throw new IOException("The downloaded executable does not match the announced app version.");
+            return plan;
+        }catch{Cleanup(plan);throw;}
+    }
+    public static void Cleanup(UpdatePlan plan) {
+        if(plan==null||!Directory.Exists(plan.Directory))return;
+        // Delete only updater-owned files. Never recursively delete the application folder.
+        foreach(string name in new string[]{"download.exe","install.ps1","plan.json","ready.txt","started.txt"})try{File.Delete(Path.Combine(plan.Directory,name));}catch{}
+        try{Directory.Delete(plan.Directory,false);}catch{}
+    }
+    public static void ConfirmStartup(string[] args) {
+        if(args.Length!=3||args[0]!="--updated")return;
+        string exe=Assembly.GetExecutingAssembly().Location,folder=Path.GetFullPath(args[1]);
+        if(!string.Equals(Path.GetDirectoryName(folder),Path.GetDirectoryName(exe),StringComparison.OrdinalIgnoreCase)||!System.Text.RegularExpressions.Regex.IsMatch(Path.GetFileName(folder),@"^\.myTaskTiny-update-[a-f0-9]{32}$"))return;
+        string json=Path.Combine(folder,"plan.json");if(!File.Exists(json)||new FileInfo(json).Length>8192)return;
+        var plan=Recording.Serializer().Deserialize<UpdatePlan>(File.ReadAllText(json));
+        if(plan==null||plan.StartupToken!=args[2]||!string.Equals(plan.Directory,folder,StringComparison.OrdinalIgnoreCase)||!string.Equals(plan.Target,exe,StringComparison.OrdinalIgnoreCase)||!string.Equals(plan.ExpectedHash,UninstallService.Hash(exe),StringComparison.OrdinalIgnoreCase))return;
+        File.WriteAllText(Path.Combine(folder,"started.txt"),Process.GetCurrentProcess().Id+":"+plan.StartupToken);
+    }
+    public static Process Start(UpdatePlan plan,int parent,bool quiet) {
+        string script=Path.Combine(plan.Directory,"install.ps1"),json=Path.Combine(plan.Directory,"plan.json");
+        File.WriteAllText(script,WorkerScript,System.Text.Encoding.UTF8);File.WriteAllText(json,Recording.Serializer().Serialize(plan),System.Text.Encoding.UTF8);
+        string powershell=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System),@"WindowsPowerShell\v1.0\powershell.exe");
+        var process=Process.Start(new ProcessStartInfo(powershell,"-NoProfile -NonInteractive -ExecutionPolicy Bypass -File \""+script+"\" -PlanPath \""+json+"\" -ParentId "+parent+(quiet?" -Quiet":"")){UseShellExecute=false,CreateNoWindow=true});
+        if(process==null)throw new IOException("Could not start the update installer.");
+        var wait=Stopwatch.StartNew();
+        while(!File.Exists(Path.Combine(plan.Directory,"ready.txt"))&&!process.HasExited&&wait.ElapsedMilliseconds<10000)System.Threading.Thread.Sleep(50);
+        // A quiet fixture may finish and clean its ready marker before this polling loop sees it.
+        if(!File.Exists(Path.Combine(plan.Directory,"ready.txt"))&&!(quiet&&process.HasExited)) {process.Dispose();throw new IOException("The update installer could not start. Your current app is still running.");}
+        return process;
+    }
+    internal static void TestStartupConfirmation() {
+        string exe=Assembly.GetExecutingAssembly().Location;
+        var plan=new UpdatePlan{Target=exe,Directory=Path.Combine(Path.GetDirectoryName(exe),".myTaskTiny-update-"+Guid.NewGuid().ToString("N")),ExpectedHash=UninstallService.Hash(exe),StartupToken=Guid.NewGuid().ToString("N")};
+        Directory.CreateDirectory(plan.Directory);
+        try {
+            File.WriteAllText(Path.Combine(plan.Directory,"plan.json"),Recording.Serializer().Serialize(plan));
+            ConfirmStartup(new string[]{"--updated",plan.Directory,"wrong-token"});
+            string marker=Path.Combine(plan.Directory,"started.txt");if(File.Exists(marker))throw new Exception("Startup accepted wrong token.");
+            ConfirmStartup(new string[]{"--updated",plan.Directory,plan.StartupToken});
+            if(File.ReadAllText(marker)!=Process.GetCurrentProcess().Id+":"+plan.StartupToken)throw new Exception("Startup confirmation failed.");
+        }finally{Cleanup(plan);}
+    }
+    public static void Test() {
+        TestStartupConfirmation();
+        if(AllowedDownload(new Uri("http://github.com/test"))||AllowedDownload(new Uri("https://github.com.example.com/test"))||AllowedDownload(new Uri("https://example.com/test"))||!AllowedDownload(new Uri("https://release-assets.githubusercontent.com/test")))throw new Exception("Update download host validation failed.");
+        bool refused=false;try{ReadHash("invalid checksum");}catch(IOException){refused=true;}if(!refused)throw new Exception("Invalid update checksum accepted.");
+        string root=Path.Combine(Path.GetTempPath(),"myTaskTiny-auto-test-"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(root);
+        try {
+            string policyFile=Path.Combine(root,"attachment-policy.txt");File.WriteAllText(policyFile,"harmless download-policy test");
+            AttachmentPolicy.Apply(policyFile,new Uri("https://github.com/"+AppIdentity.Repository+"/releases"));
+            if(File.ReadAllText(policyFile)!="harmless download-policy test")throw new Exception("Windows attachment policy modified the text fixture.");
+            string fixture=Path.Combine(root,"fixture.exe"),badStart=Path.Combine(root,"bad-start.exe"),silentExit=Path.Combine(root,"silent-exit.exe"),target=Path.Combine(root,"myTaskTiny.exe");
+            string metadata="[assembly:System.Reflection.AssemblyProduct(\"myTaskTiny\")][assembly:System.Reflection.AssemblyInformationalVersion(\"2.0.0\")]";
+            using(var compiler=new CSharpCodeProvider()) {
+                var options=new CompilerParameters(new string[]{"System.dll"},fixture){GenerateExecutable=true,CompilerOptions="/target:winexe"};
+                var result=compiler.CompileAssemblyFromSource(options,metadata+"class TestApp {static void Main(string[] args){System.IO.File.WriteAllText(\"restarted.txt\",\"yes\");if(args.Length==3)System.IO.File.WriteAllText(System.IO.Path.Combine(args[1],\"started.txt\"),System.Diagnostics.Process.GetCurrentProcess().Id+\":\"+args[2]);}}");
+                if(result.Errors.HasErrors)throw new Exception("Update fixture build failed.");
+                options.OutputAssembly=badStart;result=compiler.CompileAssemblyFromSource(options,metadata+"class TestApp {static void Main(){System.Environment.Exit(9);}}");
+                if(result.Errors.HasErrors)throw new Exception("Update failure fixture build failed.");
+                options.OutputAssembly=silentExit;result=compiler.CompileAssemblyFromSource(options,metadata+"class TestApp {static void Main(){}}");
+                if(result.Errors.HasErrors)throw new Exception("Update silent-exit fixture build failed.");
+            }
+            File.WriteAllText(target,"original app");File.WriteAllText(Path.Combine(root,"keep.mtt"),"recording");File.WriteAllText(Path.Combine(root,"myTaskTiny.settings.json"),"settings");
+            var release=new ReleaseInfo{tag_name="v2.0.0",assets=new List<ReleaseAsset>{new ReleaseAsset{name="myTaskTiny.exe",state="uploaded",size=new FileInfo(fixture).Length},new ReleaseAsset{name="SHA256SUMS.txt",state="uploaded",size=82}}};
+            string payload=fixture;bool badHash=false,cancelTransfer=false;
+            Downloader transfer=(uri,output,limit,cancel,progress)=>{
+                if(cancelTransfer)throw new OperationCanceledException();
+                byte[] bytes=uri.AbsolutePath.EndsWith("SHA256SUMS.txt")?System.Text.Encoding.UTF8.GetBytes((badHash?new string('0',64):UninstallService.Hash(payload))+"  myTaskTiny.exe\n"):File.ReadAllBytes(payload);
+                using(var input=new MemoryStream(bytes))CopyDownload(input,output,limit,bytes.Length,cancel,progress);
+            };
+            badHash=true;refused=false;try{Prepare(release,target,System.Threading.CancellationToken.None,null,transfer);}catch(IOException){refused=true;}
+            if(!refused||File.ReadAllText(target)!="original app"||Directory.GetDirectories(root).Length!=0)throw new Exception("Failed verification changed the app or left staging files.");badHash=false;
+            cancelTransfer=true;refused=false;try{Prepare(release,target,System.Threading.CancellationToken.None,null,transfer);}catch(OperationCanceledException){refused=true;}
+            if(!refused||Directory.GetDirectories(root).Length!=0)throw new Exception("Cancelled download was not cleaned up.");cancelTransfer=false;
+            release.tag_name="v3.0.0";refused=false;try{Prepare(release,target,System.Threading.CancellationToken.None,null,transfer);}catch(IOException){refused=true;}
+            if(!refused||Directory.GetDirectories(root).Length!=0)throw new Exception("Mismatched executable version accepted.");release.tag_name="v2.0.0";
+            var plan=Prepare(release,target,System.Threading.CancellationToken.None,null,transfer);
+            string powershell=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System),@"WindowsPowerShell\v1.0\powershell.exe");
+            using(var parent=Process.Start(new ProcessStartInfo(powershell,"-NoProfile -NonInteractive -Command Start-Sleep -Seconds 3"){UseShellExecute=false,CreateNoWindow=true}))
+            using(var worker=Start(plan,parent.Id,true)) {
+                if(!parent.HasExited&&File.ReadAllText(target)!="original app")throw new Exception("Update replaced app before parent exit.");
+                if(!worker.WaitForExit(15000)||worker.ExitCode!=0)throw new Exception("Update replacement/restart failed.");
+            }
+            if(UninstallService.Hash(target)!=UninstallService.Hash(fixture)||!File.Exists(Path.Combine(root,"restarted.txt"))||Directory.Exists(plan.Directory)||File.ReadAllText(Path.Combine(root,"keep.mtt"))!="recording"||File.ReadAllText(Path.Combine(root,"myTaskTiny.settings.json"))!="settings")throw new Exception("Update did not preserve user files, restart, or clean staging.");
+            payload=badStart;release.assets[0].size=new FileInfo(payload).Length;plan=Prepare(release,target,System.Threading.CancellationToken.None,null,transfer);
+            using(var worker=Start(plan,-1,true)){if(!worker.WaitForExit(15000)||worker.ExitCode!=1)throw new Exception("Startup failure not detected.");}
+            if(UninstallService.Hash(target)!=UninstallService.Hash(fixture)||Directory.Exists(plan.Directory))throw new Exception("Update rollback failed: restored="+(UninstallService.Hash(target)==UninstallService.Hash(fixture))+", staging="+Directory.Exists(plan.Directory));
+            payload=silentExit;release.assets[0].size=new FileInfo(payload).Length;plan=Prepare(release,target,System.Threading.CancellationToken.None,null,transfer);
+            using(var worker=Start(plan,-1,true)){if(!worker.WaitForExit(15000)||worker.ExitCode!=1)throw new Exception("Exit without startup confirmation accepted.");}
+            if(UninstallService.Hash(target)!=UninstallService.Hash(fixture)||Directory.Exists(plan.Directory))throw new Exception("Unconfirmed startup did not restore the previous app.");
+            payload=fixture;release.assets[0].size=new FileInfo(payload).Length;plan=Prepare(release,target,System.Threading.CancellationToken.None,null,transfer);File.WriteAllText(Path.Combine(plan.Directory,"download.exe"),"tampered");
+            using(var worker=Start(plan,-1,true)){if(!worker.WaitForExit(15000)||worker.ExitCode!=1)throw new Exception("Installer accepted changed download.");}
+            if(UninstallService.Hash(target)!=UninstallService.Hash(fixture))throw new Exception("Changed download replaced the installed app.");
+            plan=Prepare(release,target,System.Threading.CancellationToken.None,null,transfer);
+            using(var locked=new FileStream(target,FileMode.Open,FileAccess.Read,FileShare.Read))
+            using(var worker=Start(plan,-1,true)){if(!worker.WaitForExit(15000)||worker.ExitCode!=1)throw new Exception("Locked executable replacement did not fail safely.");}
+            if(UninstallService.Hash(target)!=UninstallService.Hash(fixture)||Directory.Exists(plan.Directory))throw new Exception("Replacement failure changed the installed app.");
+            using(var input=new MemoryStream(new byte[10]))using(var output=new MemoryStream()) {
+                refused=false;try{CopyDownload(input,output,5,10,System.Threading.CancellationToken.None,null);}catch(IOException){refused=true;}if(!refused)throw new Exception("Oversized download accepted.");
+            }
+            using(var input=new MemoryStream(new byte[3]))using(var output=new MemoryStream()) {
+                refused=false;try{CopyDownload(input,output,10,10,System.Threading.CancellationToken.None,null);}catch(IOException){refused=true;}if(!refused)throw new Exception("Incomplete download accepted.");
+            }
+        }finally{Directory.Delete(root,true);}
+    }
+    public const string WorkerScript=@"param([Parameter(Mandatory=$true)][string]$PlanPath,[int]$ParentId,[switch]$Quiet)
+$ErrorActionPreference = 'Stop'
+$plan = $null
+$changed = $false
+$parentExited = $false
+$started = $null
+$failure = $null
+try {
+    $plan = Get-Content -LiteralPath $PlanPath -Raw | ConvertFrom-Json
+    $download = Join-Path $plan.Directory 'download.exe'
+    $backup = Join-Path $plan.Directory 'previous.exe'
+    Set-Content -LiteralPath (Join-Path $plan.Directory 'ready.txt') -Value 'ready'
+    $parent = $null
+    try { $parent = [Diagnostics.Process]::GetProcessById($ParentId) } catch [ArgumentException] {}
+    if ($parent -and -not $parent.WaitForExit(30000)) { throw 'The app did not close. The update was not installed.' }
+    $parentExited = $true
+    if ((Get-FileHash -LiteralPath $plan.Target -Algorithm SHA256).Hash -ne $plan.OriginalHash) { throw 'The installed app changed while downloading. The update was not installed.' }
+    if ((Get-FileHash -LiteralPath $download -Algorithm SHA256).Hash -ne $plan.ExpectedHash) { throw 'The downloaded update changed. The update was not installed.' }
+    [IO.File]::Replace($download,$plan.Target,$backup)
+    $changed = $true
+    $arguments = '--updated ""' + $plan.Directory + '"" ' + $plan.StartupToken
+    $started = Start-Process -FilePath $plan.Target -ArgumentList $arguments -WorkingDirectory ([IO.Path]::GetDirectoryName($plan.Target)) -PassThru
+    $confirmation = Join-Path $plan.Directory 'started.txt'
+    $expected = [string]$started.Id + ':' + $plan.StartupToken
+    $wait = [Diagnostics.Stopwatch]::StartNew()
+    $ready = $false
+    while ($wait.ElapsedMilliseconds -lt 15000) {
+        if ((Test-Path -LiteralPath $confirmation) -and (Get-Content -LiteralPath $confirmation -Raw) -eq $expected) { $ready = $true; break }
+        if ($started.HasExited) { break }
+        Start-Sleep -Milliseconds 100
+    }
+    if (-not $ready) { throw 'The updated app did not confirm successful startup.' }
+    Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
+} catch {
+    $failure = $_.Exception.Message
+    if ($changed -and (Test-Path -LiteralPath $backup)) {
+        try {
+            if ($started -and -not $started.HasExited) { [void]$started.CloseMainWindow(); if (-not $started.WaitForExit(5000)) { throw 'The new app is still running.' } }
+            if ((Get-FileHash -LiteralPath $plan.Target -Algorithm SHA256).Hash -ne $plan.ExpectedHash) { throw 'The installed app changed after replacement.' }
+            [IO.File]::Replace($backup,$plan.Target,$download)
+            $changed = $false
+            $failure += ' The previous version was restored.'
+        } catch { $failure += ' Recovery could not finish. The previous executable is at: ' + $backup }
+    }
+    if ($parentExited -and -not $Quiet -and -not $changed) {
+        try { [void](Start-Process -FilePath $plan.Target -WorkingDirectory ([IO.Path]::GetDirectoryName($plan.Target))) } catch {}
+    }
+    if (-not $Quiet) { Add-Type -AssemblyName System.Windows.Forms; [void][Windows.Forms.MessageBox]::Show($failure,'myTaskTiny update') }
+} finally {
+    if ($plan) {
+        foreach ($name in @('download.exe','plan.json','ready.txt','started.txt','install.ps1')) { Remove-Item -LiteralPath (Join-Path $plan.Directory $name) -Force -ErrorAction SilentlyContinue }
+        try { [IO.Directory]::Delete($plan.Directory,$false) } catch {}
+    }
+}
+if ($failure) { if ($Quiet) { Write-Output $failure }; exit 1 }
+";
+}
+internal class InstallUpdateDialog : Form {
+    readonly System.Threading.CancellationTokenSource cancel=new System.Threading.CancellationTokenSource();
+    bool working=true;
+    public UpdatePlan Plan {get;private set;}
+    public InstallUpdateDialog(ReleaseInfo release,string target) : this(release,target,AutoUpdate.Prepare) {}
+    internal InstallUpdateDialog(ReleaseInfo release,string target,Func<ReleaseInfo,string,System.Threading.CancellationToken,Action<int>,UpdatePlan> prepare) {
+        Text="Updating myTaskTiny";AutoScaleDimensions=new SizeF(96F,96F);AutoScaleMode=AutoScaleMode.Dpi;ClientSize=new Size(420,160);StartPosition=FormStartPosition.CenterParent;FormBorderStyle=FormBorderStyle.FixedDialog;MaximizeBox=MinimizeBox=false;ShowInTaskbar=false;Font=new Font("Segoe UI",9);BackColor=Theme.Canvas;
+        var label=new Label{Text="Downloading and verifying the update…",Location=new Point(20,20),Size=new Size(380,22)};Controls.Add(label);
+        var progress=new ProgressBar{Location=new Point(20,52),Size=new Size(380,20)};Controls.Add(progress);
+        Controls.Add(new Label{Text="The app will restart. Recordings and settings are kept.",Location=new Point(20,82),Size=new Size(380,22)});
+        var stop=new ToolButton{Text="Cancel",Location=new Point(300,116),Size=new Size(100,28)};Controls.Add(stop);
+        Action requestCancel=()=>{cancel.Cancel();stop.Enabled=false;label.Text="Cancelling…";};stop.Click+=(s,e)=>requestCancel();
+        FormClosing+=(s,e)=>{if(working){e.Cancel=true;requestCancel();}};
+        Shown+=async (s,e)=> {
+            var report=new Progress<int>(value=>{if(!IsDisposed)progress.Value=Math.Max(0,Math.Min(100,value));});
+            try {
+                Plan=await System.Threading.Tasks.Task.Run(()=>prepare(release,target,cancel.Token,value=>((IProgress<int>)report).Report(value)));
+                if(cancel.IsCancellationRequested){AutoUpdate.Cleanup(Plan);Plan=null;working=false;DialogResult=DialogResult.Cancel;}
+                else {working=false;DialogResult=DialogResult.OK;}
+            } catch(OperationCanceledException){working=false;DialogResult=DialogResult.Cancel;}
+            catch(Exception ex){MessageBox.Show(this,"The update could not be installed. Your current app has not been changed.\n\n"+ex.Message+"\n\nYou can try again or use Open release page.","myTaskTiny update",MessageBoxButtons.OK,MessageBoxIcon.Information);working=false;DialogResult=DialogResult.Cancel;}
+            finally{working=false;Close();}
+        };
+    }
+    internal static void Test() {
+        bool cancelled=false;
+        using(var dialog=new InstallUpdateDialog(null,null,(release,target,token,progress)=>{progress(50);token.WaitHandle.WaitOne(5000);cancelled=token.IsCancellationRequested;token.ThrowIfCancellationRequested();throw new Exception("Cancellation was not requested.");}))
+        using(var close=new Timer{Interval=200}) {
+            close.Tick+=(s,e)=>{close.Stop();using(var bitmap=new Bitmap(dialog.Width,dialog.Height)){dialog.DrawToBitmap(bitmap,new Rectangle(0,0,dialog.Width,dialog.Height));bitmap.Save(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"update-progress-preview.png"));}dialog.Close();};
+            dialog.Shown+=(s,e)=>close.Start();
+            if(dialog.ShowDialog()!=DialogResult.Cancel||!cancelled||dialog.Plan!=null)throw new Exception("Closing update progress did not cancel the download.");
+        }
+        var expected=new UpdatePlan();
+        using(var dialog=new InstallUpdateDialog(null,null,(release,target,token,progress)=>expected))if(dialog.ShowDialog()!=DialogResult.OK||dialog.Plan!=expected)throw new Exception("Completed download did not reach installation.");
+    }
+    protected override void Dispose(bool disposing){if(disposing)cancel.Dispose();base.Dispose(disposing);}
+}
+
 internal class UpdateDialog : Form {
     public UpdateDialog(ReleaseInfo release) {
         SuspendLayout();
-        Text="Update available";AutoScaleDimensions=new SizeF(96F,96F);AutoScaleMode=AutoScaleMode.Dpi;ClientSize=new Size(460,344);StartPosition=FormStartPosition.CenterParent;FormBorderStyle=FormBorderStyle.FixedDialog;MaximizeBox=MinimizeBox=false;ShowInTaskbar=false;ShowIcon=false;Font=new Font("Segoe UI",9);BackColor=Theme.Canvas;ForeColor=Theme.Text;
+        Text="Update available";AutoScaleDimensions=new SizeF(96F,96F);AutoScaleMode=AutoScaleMode.Dpi;ClientSize=new Size(460,372);StartPosition=FormStartPosition.CenterParent;FormBorderStyle=FormBorderStyle.FixedDialog;MaximizeBox=MinimizeBox=false;ShowInTaskbar=false;ShowIcon=false;Font=new Font("Segoe UI",9);BackColor=Theme.Canvas;ForeColor=Theme.Text;
         Controls.Add(new Label{Text="myTaskTiny "+release.Number+" is available",Location=new Point(20,16),AutoSize=true,Font=new Font("Segoe UI Semibold",12f)});
         Controls.Add(new Label{Text="You have "+AppVersion.Current+"  ·  Release notes",Location=new Point(21,44),AutoSize=true,ForeColor=Theme.Muted});
         var notes=new TextBox{Text=string.IsNullOrWhiteSpace(release.body)?"No release notes provided.":release.body.Replace("\r\n","\n").Replace("\n",Environment.NewLine),Multiline=true,ReadOnly=true,ScrollBars=ScrollBars.Vertical,BorderStyle=BorderStyle.FixedSingle,Location=new Point(20,68),Size=new Size(420,170),BackColor=Color.White,ForeColor=Theme.Text};Controls.Add(notes);
-        Controls.Add(new Label{Text="Download opens GitHub. Save your work and close the app before replacing the EXE. Your recordings and settings files are kept.",Location=new Point(20,248),Size=new Size(420,32),ForeColor=Theme.Muted});
-        var footer=Theme.Footer(new Rectangle(0,288,460,56));Controls.Add(footer);
+        Controls.Add(new Label{Text=AutoUpdate.CanInstall(release)?"Update now downloads, verifies, and installs this version, then restarts the app. Your recordings and settings are kept.":"Automatic installation is unavailable for this release. Use Open release page to download it manually.",Location=new Point(20,248),Size=new Size(420,32),ForeColor=Theme.Muted});
+        var manual=new LinkLabel{Text="Open release page",Location=new Point(20,284),AutoSize=true};manual.LinkClicked+=(s,e)=>{DialogResult=DialogResult.Retry;};Controls.Add(manual);
+        var footer=Theme.Footer(new Rectangle(0,316,460,56));Controls.Add(footer);
         var skip=new ToolButton{Text="Skip this version",Location=new Point(20,13),Size=new Size(124,30),DialogResult=DialogResult.Ignore};footer.Controls.Add(skip);
         var later=new ToolButton{Text="Later",Location=new Point(228,13),Size=new Size(88,30),DialogResult=DialogResult.Cancel};footer.Controls.Add(later);CancelButton=later;
-        var download=new ToolButton{Text="Download update",Style=ButtonStyle.Primary,Location=new Point(324,13),Size=new Size(116,30),DialogResult=DialogResult.Yes};footer.Controls.Add(download);AcceptButton=download;
+        var download=new ToolButton{Text="Update now",Enabled=AutoUpdate.CanInstall(release),Style=ButtonStyle.Primary,Location=new Point(324,13),Size=new Size(116,30),DialogResult=DialogResult.Yes};footer.Controls.Add(download);AcceptButton=download;
         ActiveControl=download;Shown+=(s,e)=>notes.Select(0,0);
         ResumeLayout(false);
     }
@@ -372,11 +685,12 @@ public class MacroEvent {
     public uint Flags {get;set;}
 }
 public class Recording {
+    public const int MaximumJsonLength=64000000;
     public int Version {get;set;}
     public long Duration {get;set;}
     public List<MacroEvent> Events {get;set;}
     public Recording() { Version=1; Events=new List<MacroEvent>(); }
-    public static JavaScriptSerializer Serializer() { return new JavaScriptSerializer { MaxJsonLength=32000000 }; }
+    public static JavaScriptSerializer Serializer() { return new JavaScriptSerializer { MaxJsonLength=MaximumJsonLength }; }
     public void Validate() {
         if(Version!=1 || Events==null || Events.Count>500000 || Duration<0 || Duration>86400000) throw new Exception("Unsupported or oversized recording.");
         long previous=0;
@@ -632,7 +946,7 @@ public class MainForm : Form {
     ToolStripMenuItem updateItem,automaticUpdatesItem;
     readonly string updatePreferencesPath=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"myTaskTiny","updates.json");
     CreatedFiles createdFiles;
-    bool uninstallApproved;
+    bool exitApproved;
     ToolStripMenuItem uninstallItem;
     RecordingLibrary library;
     string selectedPath;
@@ -661,6 +975,7 @@ public class MainForm : Form {
     RadioButton speedMode,intervalEnabled;
     NumericUpDown intervalValue;
     ComboBox intervalUnit;
+    internal bool ReadyForUpdate {get{return !IsDisposed&&Visible&&keyHook!=IntPtr.Zero&&mouseHook!=IntPtr.Zero;}}
     public MainForm() : this(false) {}
     internal MainForm(bool testMode) {
         createdFiles=new CreatedFiles(Assembly.GetExecutingAssembly().Location);
@@ -720,7 +1035,7 @@ public class MainForm : Form {
         timer.Interval=5;timer.Tick+=(s,e)=>Tick();timer.Start();
         keyProc=Keyboard;mouseProc=Mouse;
         Shown+=(s,e)=> { keyHook=Native.SetWindowsHookEx(13,keyProc,Native.GetModuleHandle(null),0);mouseHook=Native.SetWindowsHookEx(14,mouseProc,Native.GetModuleHandle(null),0);if(keyHook==IntPtr.Zero || mouseHook==IntPtr.Zero){MessageBox.Show("Cannot install Windows input hooks. Close and reopen the app.");Close();} };
-        FormClosing+=(s,e)=> { Stop(); if(!uninstallApproved&&!ConfirmDiscard()) {e.Cancel=true;return;} timer.Stop();Native.UnhookWindowsHookEx(keyHook);Native.UnhookWindowsHookEx(mouseHook); };
+        FormClosing+=(s,e)=> { Stop(); if(!exitApproved&&!ConfirmDiscard()) {e.Cancel=true;return;} timer.Stop();Native.UnhookWindowsHookEx(keyHook);Native.UnhookWindowsHookEx(mouseHook); };
         using(var embedded=Assembly.GetExecutingAssembly().GetManifestResourceStream("macro.mtt")) {if(embedded!=null)using(var reader=new StreamReader(embedded)){macro=Recording.Serializer().Deserialize<Recording>(reader.ReadToEnd());macro.Validate();fileName="Embedded recording";}}
         UpdateControls();
         SetStatus("Ready",Tone.Ready,Summary());
@@ -822,8 +1137,20 @@ public class MainForm : Form {
         try {using(var dialog=new UpdateDialog(release)) {
             var result=dialog.ShowDialog(this);
             if(result==DialogResult.Ignore){updatePreferences.SkippedVersion=release.Number.ToString();updatePreferences.Save(updatePreferencesPath);}
-            else if(result==DialogResult.Yes)Process.Start(new ProcessStartInfo(release.Page){UseShellExecute=true});
+            else if(result==DialogResult.Retry)Process.Start(new ProcessStartInfo(release.Page){UseShellExecute=true});
+            else if(result==DialogResult.Yes)InstallUpdate(release);
         }}finally{editingHotkeys=false;}
+    }
+    void InstallUpdate(ReleaseInfo release) {
+        if(!ConfirmDiscard())return;
+        using(var download=new InstallUpdateDialog(release,Assembly.GetExecutingAssembly().Location)) {
+            if(download.ShowDialog(this)!=DialogResult.OK)return;
+            bool handedOff=false;
+            try {
+                using(var helper=AutoUpdate.Start(download.Plan,Process.GetCurrentProcess().Id,false)){}
+                handedOff=true;exitApproved=true;Close();
+            }finally{if(!handedOff)AutoUpdate.Cleanup(download.Plan);}
+        }
     }
     void Tick() {
         if(availableUpdate!=null)Guard(OfferUpdateIfIdle);
@@ -970,7 +1297,7 @@ public class MainForm : Form {
             if((k.Flags&0x10)==0) {
                 bool down=m==0x100||m==0x104;
                 if(HandleShortcut(k.Vk,down))return new IntPtr(1);
-                if(recording && !ShortcutsBlocked && Native.GetForegroundWindow()!=Handle) macro.Events.Add(new MacroEvent{Time=watch.ElapsedMilliseconds,Message=m,Data=k.Vk,Scan=k.Scan,Flags=k.Flags});
+                if(recording && !ShortcutsBlocked && Native.GetForegroundWindow()!=Handle) CaptureEvent(new MacroEvent{Time=watch.ElapsedMilliseconds,Message=m,Data=k.Vk,Scan=k.Scan,Flags=k.Flags});
             }
         }
         return Native.CallNextHookEx(keyHook,code,message,data);
@@ -980,10 +1307,24 @@ public class MainForm : Form {
             if((m.Flags&1)==0 && (WindowState==FormWindowState.Minimized || !Bounds.Contains(m.Point.X,m.Point.Y)) && (msg!=0x200||now-lastMove>=8)) {
                 if(msg==0x200)lastMove=now;
                 uint value=(msg==0x20A||msg==0x20E)?unchecked((uint)(int)(short)(m.Data>>16)):(m.Data>>16);
-                macro.Events.Add(new MacroEvent{Time=now,Message=msg,X=m.Point.X,Y=m.Point.Y,Data=value});
+                CaptureEvent(new MacroEvent{Time=now,Message=msg,X=m.Point.X,Y=m.Point.Y,Data=value});
             }
         }
         return Native.CallNextHookEx(mouseHook,code,message,data);
+    }
+    void CaptureEvent(MacroEvent input) {
+        if(macro.Events.Count>=500000||input.Time>86400000){Stop();SetStatus("Stopped",Tone.Warning,"Recording limit reached; save your recording");return;}
+        macro.Events.Add(input);
+    }
+    internal void TestRecordingLimits() {
+        macro=new Recording();recording=true;watch.Restart();
+        CaptureEvent(new MacroEvent{Time=86400001,Message=0x200});
+        if(recording||macro.Events.Count!=0)throw new Exception("Recording exceeded its duration limit.");macro.Validate();
+        macro=new Recording();recording=true;watch.Restart();
+        for(int i=0;i<500000;i++)macro.Events.Add(new MacroEvent{Time=0,Message=0x200});
+        CaptureEvent(new MacroEvent{Time=0,Message=0x200});
+        if(recording||macro.Events.Count!=500000)throw new Exception("Recording exceeded its event limit.");macro.Validate();
+        macro=new Recording();dirty=false;Stop();
     }
     void ExportExe() {
         if(macro.Events.Count==0)throw new Exception("Record or open a macro first.");
@@ -1057,7 +1398,7 @@ public class MainForm : Form {
                 dialog.Plan.EmptyDirectories.Add(Path.GetDirectoryName(exe));
                 if(!exported)dialog.Plan.EmptyDirectories.Add(Path.GetDirectoryName(updatePreferencesPath));
                 using(var helper=UninstallService.Start(dialog.Plan,Process.GetCurrentProcess().Id,false)) {if(helper==null)throw new IOException("Could not start uninstall.");}
-                uninstallApproved=true;Close();
+                exitApproved=true;Close();
             }
         } finally {editingHotkeys=false;}
     }
@@ -1081,7 +1422,7 @@ public class MainForm : Form {
     void LoadRecording(string path) {
         if(recording||playing||pending)return;
         if(!File.Exists(path))throw new Exception("This recording was moved or deleted. Use Browse to locate it.");
-        if(new FileInfo(path).Length>32000000)throw new Exception("Recording is too large.");
+        if(new FileInfo(path).Length>Recording.MaximumJsonLength)throw new Exception("Recording is too large.");
         var loaded=Recording.Serializer().Deserialize<Recording>(File.ReadAllText(path));if(loaded==null)throw new Exception("Empty recording.");loaded.Validate();
         if(!ConfirmDiscard())return;
         macro=loaded;selectedPath=Path.GetFullPath(path);fileName=Path.GetFileName(path);dirty=false;Stop();RememberRecording(path);
@@ -1114,7 +1455,7 @@ internal static class Program {
                 runner.Start();Application.Run(context);
             }
             Environment.ExitCode=failure==null?0:1;
-            File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"test-results.txt"),failure!=null?"FAIL: "+failure:(args[0]=="--self-test"?"PASS: full Windows regression suite, including live menu clicks and keyboard playback. ":"PASS: non-injecting regression suite. ")+"Uninstall tests: scoped deletion, changed-file protection, wait-for-exit, unchecked data, cancel, tracked exports and settings. Playback, countdown, waiting, stopped, and finished indicators passed. Name migration and legacy update compatibility passed. Existing shortcut, interval, recording, export, update, and version checks passed.");
+            File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"test-results.txt"),failure!=null?"FAIL: "+failure:(args[0]=="--self-test"?"PASS: full Windows regression suite, including live menu clicks and keyboard playback. ":"PASS: non-injecting regression suite. ")+"Uninstall tests: scoped deletion, changed-file protection, wait-for-exit, unchecked data, cancel, tracked exports and settings. Playback, countdown, waiting, stopped, and finished indicators passed. Name migration and legacy update compatibility passed. Automatic update download validation, cancellation, replacement, restart, rollback, startup confirmation, Windows attachment-policy integration, recording limits, and preservation of user files passed. Existing shortcut, interval, recording, export, update, and version checks passed.");
             return;
         }
         if(args.Length>0&&args[0]=="--check-update-test") {try{var release=UpdateService.Fetch();File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"update-test-results.txt"),release==null?"PASS: no published downloadable release": "PASS: GitHub release "+release.tag_name+"; offer="+UpdateService.ShouldOffer(release,AppVersion.Current,null,false));}catch(Exception ex){File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"update-test-results.txt"),"FAIL: "+ex.Message);Environment.ExitCode=1;}return;}
@@ -1123,15 +1464,20 @@ internal static class Program {
         using(var instance=new System.Threading.Mutex(true,"Local\\myTaskTiny.SingleInstance",out first))
         using(var legacy=new System.Threading.Mutex(true,"Local\\"+AppIdentity.LegacyName+".SingleInstance",out legacyFirst)) {
             if(!first||!legacyFirst){Native.AllowSetForegroundWindow(-1);Native.PostMessage((IntPtr)0xFFFF,MainForm.ActivateMessage,IntPtr.Zero,IntPtr.Zero);Native.PostMessage((IntPtr)0xFFFF,MainForm.LegacyActivateMessage,IntPtr.Zero,IntPtr.Zero);return;}
-            Application.Run(new MainForm());
+            using(var form=new MainForm()) {
+                form.Shown+=(sender,e)=>{if(form.ReadyForUpdate)try{AutoUpdate.ConfirmStartup(args);}catch{};};
+                Application.Run(form);
+            }
         }
     }
     static void Assert(bool condition,string message){if(!condition)throw new Exception(message);}
     static void SelfTest(bool livePlayback) {
         AppIdentity.Test();
         UpdateService.Test();
+        AutoUpdate.Test();
+        InstallUpdateDialog.Test();
         UninstallService.Test();
-        using(var dialog=new UpdateDialog(new ReleaseInfo{tag_name="v2.0.0",body="Example release notes\n- New feature\n- Bug fix"})) {
+        using(var dialog=new UpdateDialog(new ReleaseInfo{tag_name="v2.0.0",body="Example release notes\n- New feature\n- Bug fix",assets=new List<ReleaseAsset>{new ReleaseAsset{name="myTaskTiny.exe",state="uploaded",size=100},new ReleaseAsset{name="SHA256SUMS.txt",state="uploaded",size=82}}})) {
             dialog.Text="Update dialog layout test";dialog.Show();Application.DoEvents();
             using(var bitmap=new Bitmap(dialog.Width,dialog.Height)){dialog.DrawToBitmap(bitmap,new Rectangle(0,0,dialog.Width,dialog.Height));bitmap.Save(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"update-preview.png"));}
         }
@@ -1147,13 +1493,15 @@ internal static class Program {
             keys.Play=0;invalid=false;try{keys.Validate();}catch{invalid=true;}Assert(invalid,"Reject unsupported key");
         }finally{if(File.Exists(settingsFile))File.Delete(settingsFile);}
 
+        var largestEvent=new MacroEvent{Time=86400000,Message=0x20E,X=int.MinValue,Y=int.MinValue,Data=uint.MaxValue,Scan=uint.MaxValue,Flags=uint.MaxValue};
+        Assert((Recording.Serializer().Serialize(largestEvent).Length+1L)*500000+100<=Recording.MaximumJsonLength,"Maximum recording fits JSON size limit");
         var r=new Recording{Duration=100};r.Events.Add(new MacroEvent{Time=10,Message=0x100,Data=65,Scan=30});r.Events.Add(new MacroEvent{Time=90,Message=0x101,Data=65,Scan=30});r.Validate();
         var copy=Recording.Serializer().Deserialize<Recording>(Recording.Serializer().Serialize(r));copy.Validate();Assert(copy.Events.Count==2&&copy.Events[1].Time==90,"Round trip");
         copy.Events[1].Time=1;bool rejected=false;try{copy.Validate();}catch{rejected=true;}Assert(rejected,"Reject unordered events");copy.Events[1].Time=90;copy.Events[1].Data=256;rejected=false;try{copy.Validate();}catch{rejected=true;}Assert(rejected,"Reject invalid key");
         Assert(Marshal.SizeOf(typeof(Native.Input))==(IntPtr.Size==8?40:28),"Native INPUT ABI");var k=Native.Convert(r.Events[1]);Assert(k.Type==1&&k.Value.Key.Scan==30&&k.Value.Key.Flags==10,"Keyboard conversion");
         var m=Native.Convert(new MacroEvent{Message=0x20A,Data=unchecked((uint)-120)});Assert(m.Value.Mouse.Flags==0xC801&&m.Value.Mouse.Data==unchecked((uint)-120),"Wheel conversion");
         Native.Hook callback=(c,w,l)=>Native.CallNextHookEx(IntPtr.Zero,c,w,l);var kh=Native.SetWindowsHookEx(13,callback,Native.GetModuleHandle(null),0);var mh=Native.SetWindowsHookEx(14,callback,Native.GetModuleHandle(null),0);Assert(kh!=IntPtr.Zero&&mh!=IntPtr.Zero,"Install hooks");Native.UnhookWindowsHookEx(kh);Native.UnhookWindowsHookEx(mh);GC.KeepAlive(callback);
-        using(var f=new MainForm(true)){f.Show();Application.DoEvents();Assert(f.Visible,"Window visible");f.TestHotkeys();f.TestMenu(livePlayback);f.TestLibrary();f.TestIntervals();f.TestActivityIndicators();if(livePlayback)f.TestPlayback();
+        using(var f=new MainForm(true)){f.Show();Application.DoEvents();Assert(f.Visible,"Window visible");f.TestHotkeys();f.TestMenu(livePlayback);f.TestLibrary();f.TestIntervals();f.TestRecordingLimits();f.TestActivityIndicators();if(livePlayback)f.TestPlayback();
             string exported=Path.Combine(Path.GetTempPath(),"myTaskTiny-test-"+Guid.NewGuid().ToString("N")+".exe");
             try {f.BuildExport(exported);Assert(new FileInfo(exported).Length>10000,"Export executable");Assert(FileVersionInfo.GetVersionInfo(exported).ProductVersion==AppVersion.Current,"Export version metadata");}finally{if(File.Exists(exported))File.Delete(exported);}
             using(var bitmap=new Bitmap(f.Width,f.Height)){f.DrawToBitmap(bitmap,new Rectangle(0,0,f.Width,f.Height));bitmap.Save(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"preview.png"));}

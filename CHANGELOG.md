@@ -4,6 +4,17 @@ Application changes, newest first. Versions use `MAJOR.MINOR.PATCH`: breaking ch
 
 Version 1.9.0 is the first public GitHub release. Earlier entries document development builds; 1.0.0 and 1.1.0 were assigned retrospectively to builds that did not yet include version metadata.
 
+## 1.11.0 — 2026-09-20
+
+- Added **Update now** to download, verify, install, and restart the app without opening a browser.
+- Added download progress, cancellation, and checks for the published checksum, executable version, and download size.
+- Preserved recordings and settings during updates, prompted for unsaved work, and added recovery when replacement or launch fails.
+- Kept the update backup until the restarted app confirms successful initialization, and applied Windows attachment security policy to downloaded updates.
+- Stopped recording before its duration or event count could exceed the supported limits, and increased the JSON size limit to accommodate the maximum recording.
+- Restricted release packages to an explicit list of project files.
+- Kept **Open release page** for manual downloads and releases without automatic-installation assets.
+- Clarified recommended downloads and labelled the compatibility ZIP used by v1.9 update checkers.
+
 ## 1.10.0 — 2026-09-20
 
 - Renamed the app to **myTaskTiny**, including the executable, interface, release packages, and documentation.

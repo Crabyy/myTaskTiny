@@ -8,7 +8,7 @@ A portable Windows app for recording and replaying mouse and keyboard actions. B
 
 Download **myTaskTiny.exe** from the release page and place it in a writable folder. No installation is required. The ZIP includes the executable, source code, and documentation.
 
-**Requirements:** Windows with .NET Framework 4.5 or later. Uninstall requires Windows PowerShell 4.0 or later; building release ZIPs requires Windows PowerShell 5.0 or later.
+**Requirements:** Windows with .NET Framework 4.5 or later. Automatic updates and uninstall require Windows PowerShell 4.0 or later; building release ZIPs requires Windows PowerShell 5.0 or later.
 
 ### Windows SmartScreen
 
@@ -82,11 +82,15 @@ Only one recorder or exported macro from the current version can be open in a Wi
 
 ## Updates
 
-The app checks GitHub Releases on startup. When a newer stable version is available, it shows the release notes with **Download update**, **Later**, and **Skip this version**. The popup waits until the app is idle and focused.
+The app checks GitHub Releases on startup. When a newer stable version is available, it shows the release notes with **Update now**, **Later**, and **Skip this version**. The popup waits until the app is idle and focused.
 
-**Download update** opens the release page in your browser. Save your work, close myTaskTiny, and replace its executable with the new download. Keep your recordings and settings files. Updates are not installed automatically.
+**Update now** downloads the new executable, checks its SHA-256 checksum and version, then closes and restarts the app. If you have an unsaved recording, it prompts you to save it first. The download shows progress and can be cancelled before installation. Recordings, shortcut settings, recording history, and update preferences are kept. Playback options that apply only to the current session reset after restart.
 
-Use **Menu → Check for updates** to check manually, including versions you previously skipped. To disable startup checks, uncheck **Menu → Check for updates on startup**. Exported macro executables do not check for recorder updates.
+Automatic installation requires a writable app folder and a release containing both `myTaskTiny.exe` and `SHA256SUMS.txt`. A failed download or verification leaves the current app unchanged. The installer keeps a temporary backup until the restarted app confirms that its window and input hooks are ready. If startup fails, it attempts to restore the previous executable. If recovery cannot finish, it reports the backup location. Downloaded updates are passed to Windows Attachment Services for security policy and download-origin handling. A security failure stops installation. Checksum verification does not provide a publisher signature or guarantee that Windows will allow the app to run.
+
+**Open release page** remains available for manual downloads. Users on v1.10.0 or earlier must update manually once to receive the automatic updater introduced in v1.11.0.
+
+Use **Menu → Check for updates** to check manually, including versions you previously skipped. To disable startup checks, uncheck **Menu → Check for updates on startup**. An update is installed only after you select **Update now**. Exported macro executables do not check for recorder updates.
 
 ## Uninstall
 
@@ -96,7 +100,7 @@ The app tracks recordings and exports saved from v1.10.0 onward in a `.created-f
 
 ## Files and privacy
 
-Recordings stay on your computer. The update checker contacts GitHub for release metadata; it does not upload recordings or keystrokes.
+Recordings stay on your computer. The update checker contacts GitHub for release metadata and, when you choose Update now, downloads the executable and checksum; it does not upload recordings or keystrokes.
 
 | File | Purpose |
 | --- | --- |
@@ -111,6 +115,7 @@ Recordings contain the keys you type. Avoid recording passwords or other sensiti
 ## Limitations
 
 - Playback uses screen coordinates. Keep target windows, display scaling, and monitor positions consistent with the recording.
+- A recording is limited to 24 hours and 500,000 input events. Recording stops at either limit. Version 1.11.0 raises the file-size limit to 64 MB so recordings within these limits can be saved and reopened.
 - Timing is approximate and depends on Windows scheduling and the target application’s response time.
 - Windows can prevent input from reaching an application running with higher privileges. Some games and protected applications also reject simulated input.
 - TinyTask `.rec` files are not supported. myTaskTiny is an independent implementation.

@@ -34,10 +34,10 @@ using System.Reflection;
     if (Test-Path -LiteralPath $release) { Remove-Item -LiteralPath $release -Recurse -Force }
     New-Item -ItemType Directory -Force -Path $release | Out-Null
     Copy-Item -LiteralPath $exe -Destination (Join-Path $release 'myTaskTiny.exe') -Force
-    foreach ($name in @('VERSION','README.md','CHANGELOG.md','PUBLISHING.md','build.cmd','build.ps1','test.cmd')) { Copy-Item -LiteralPath (Join-Path $root $name) -Destination $release -Force }
-    foreach ($name in @('assets','tools')) { Copy-Item -LiteralPath (Join-Path $root $name) -Destination $release -Recurse -Force }
-    New-Item -ItemType Directory -Force -Path (Join-Path $release 'src') | Out-Null
-    Copy-Item -LiteralPath $source -Destination (Join-Path $release 'src\Program.cs') -Force
+    foreach ($name in @('VERSION','README.md','CHANGELOG.md','PUBLISHING.md','AGENTS.md','.gitignore','build.cmd','build.ps1','test.cmd')) { Copy-Item -LiteralPath (Join-Path $root $name) -Destination $release -Force }
+    foreach ($name in @('assets','tools','src')) { New-Item -ItemType Directory -Force -Path (Join-Path $release $name) | Out-Null }
+    # Only package declared project files; do not sweep in unrelated local tools or signing files.
+    foreach ($name in @('assets\app.ico','tools\make-icon.ps1','tools\publish-release.ps1','src\Program.cs')) { Copy-Item -LiteralPath (Join-Path $root $name) -Destination (Join-Path $release $name) -Force }
     $hash = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant()
     Set-Content -LiteralPath (Join-Path $release 'SHA256SUMS.txt') -Value "$hash  myTaskTiny.exe" -Encoding ASCII
     $archive = Join-Path $root "releases\myTaskTiny-$version.zip"
